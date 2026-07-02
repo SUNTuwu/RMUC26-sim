@@ -9,11 +9,20 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
+def _venv_python_prefix():
+    venv = os.environ.get("VIRTUAL_ENV")
+    if not venv:
+        return None
+    python_path = os.path.join(venv, "bin", "python3")
+    return python_path if os.path.exists(python_path) else None
+
+
 def generate_launch_description():
     bringup_pkg = get_package_share_directory('sim_bringup')
     desc_pkg = get_package_share_directory('sim_description')
     xacro_path = os.path.join(desc_pkg, 'urdf', 'sentry.urdf.xacro')
     params_file = os.path.join(bringup_pkg, 'config', 'sim_config.yaml')
+    python_prefix = _venv_python_prefix()
 
     robot_desc = ParameterValue(
         Command(['xacro ', xacro_path]),
@@ -32,6 +41,7 @@ def generate_launch_description():
             package='sim_core',
             executable='chassis',
             name='chassis',
+            prefix=python_prefix,
             parameters=[
                 params_file,
                 {
@@ -58,6 +68,7 @@ def generate_launch_description():
             package='sim_core',
             executable='sentry_sim_node',
             name='sentry_sim_node',
+            prefix=python_prefix,
             parameters=[
                 params_file,
                 {

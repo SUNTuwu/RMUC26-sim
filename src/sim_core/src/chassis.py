@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import math
+
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
 SMALL_GYRO_MODE_THRESHOLD = 0.5
 
@@ -24,17 +27,22 @@ class ChassisNode(Node):
         self.declare_parameter("keyboard_cmd_vel_topic", "/cmd_vel_keyboard")
         self.declare_parameter("nav_cmd_vel_topic", "/cmd_vel_processed")
         self.declare_parameter("cmd_vel_out_topic", "/cmd_vel_chassis")
+        self.declare_parameter("joint_state_topic", "/joint_states")
+        self.declare_parameter("gimbal_joint_name", "gimbal_yaw_joint")
         self.declare_parameter("publish_rate", 50.0)
         self.declare_parameter("max_linear_accel", 1.5)
         self.declare_parameter("max_angular_accel", 3.0)
         self.declare_parameter("keyboard_cmd_timeout_sec", 0.2)
         self.declare_parameter("nav_cmd_timeout_sec", 0.5)
+        self.declare_parameter("small_gyro_spin_rate", 6.0)
 
         self.keyboard_cmd_vel_topic = str(
             self.get_parameter("keyboard_cmd_vel_topic").value
         )
         self.nav_cmd_vel_topic = str(self.get_parameter("nav_cmd_vel_topic").value)
         self.cmd_vel_out_topic = str(self.get_parameter("cmd_vel_out_topic").value)
+        self.joint_state_topic = str(self.get_parameter("joint_state_topic").value)
+        self.gimbal_joint_name = str(self.get_parameter("gimbal_joint_name").value)
         self.publish_rate = max(float(self.get_parameter("publish_rate").value), 1.0)
         self.max_linear_accel = max(float(self.get_parameter("max_linear_accel").value), 0.0)
         self.max_angular_accel = max(float(self.get_parameter("max_angular_accel").value), 0.0)
@@ -43,6 +51,9 @@ class ChassisNode(Node):
         )
         self.nav_cmd_timeout_sec = max(
             float(self.get_parameter("nav_cmd_timeout_sec").value), 0.0
+        )
+        self.small_gyro_spin_rate = float(
+            self.get_parameter("small_gyro_spin_rate").value
         )
 
         self.target_vx = 0.0
@@ -64,9 +75,16 @@ class ChassisNode(Node):
         self.last_keyboard_cmd_time = self.get_clock().now()
         self.last_nav_cmd_time = self.get_clock().now()
         self.last_step_time = self.get_clock().now()
+        self.gimbal_joint_pos = 0.0
         self.last_selected_source = "idle"
         self.last_publish_signature = None
 
+        self.joint_state_subscription = self.create_subscription(
+            JointState,
+            self.joint_state_topic,
+            self.joint_state_callback,
+            10,
+        )
         self.keyboard_subscription = self.create_subscription(
             Twist,
             self.keyboard_cmd_vel_topic,
@@ -85,10 +103,19 @@ class ChassisNode(Node):
         self.get_logger().info(
             "chassis ready: "
             f"keyboard={self.keyboard_cmd_vel_topic}, nav={self.nav_cmd_vel_topic}, "
+            f"joint_state={self.joint_state_topic}, "
             f"publish {self.cmd_vel_out_topic}, "
             f"max_linear_accel={self.max_linear_accel:.2f}, "
             f"max_angular_accel={self.max_angular_accel:.2f}"
         )
+
+    def joint_state_callback(self, msg: JointState) -> None:
+        try:
+            index = msg.name.index(self.gimbal_joint_name)
+        except ValueError:
+            return
+        if index < len(msg.position):
+            self.gimbal_joint_pos = float(msg.position[index])
 
     def _has_effective_input(self, msg: Twist) -> bool:
         return any(
@@ -96,7 +123,7 @@ class ChassisNode(Node):
             for value in (
                 msg.linear.x,
                 msg.linear.y,
-                msg.linear.z,
+                msg.angular.x,
                 msg.angular.z,
             )
         )
@@ -129,6 +156,13 @@ class ChassisNode(Node):
         self.nav_target_wz = float(msg.angular.z)
         self.last_nav_cmd_time = self.get_clock().now()
 
+    def _keyboard_cmd_in_base_frame(self) -> tuple[float, float]:
+        cos_yaw = math.cos(self.gimbal_joint_pos)
+        sin_yaw = math.sin(self.gimbal_joint_pos)
+        base_vx = self.keyboard_target_vx * cos_yaw - self.keyboard_target_vy * sin_yaw
+        base_vy = self.keyboard_target_vx * sin_yaw + self.keyboard_target_vy * cos_yaw
+        return base_vx, base_vy
+
     def _select_active_command(self, now) -> tuple[str, float, float, float, float]:
         keyboard_fresh = self.keyboard_input_active and self._is_fresh(
             self.last_keyboard_cmd_time,
@@ -136,21 +170,13 @@ class ChassisNode(Node):
             now,
         )
         if keyboard_fresh:
+            keyboard_base_vx, keyboard_base_vy = self._keyboard_cmd_in_base_frame()
             return (
                 "keyboard",
-                self.keyboard_target_vx,
-                self.keyboard_target_vy,
-                1.0 if self.keyboard_small_gyro_enabled else 0.0,
+                keyboard_base_vx,
+                keyboard_base_vy,
                 self.keyboard_target_gimbal_wz,
-            )
-
-        if self.keyboard_small_gyro_enabled:
-            return (
-                "keyboard_spin",
-                0.0,
-                0.0,
-                1.0,
-                0.0,
+                self.small_gyro_spin_rate if self.keyboard_small_gyro_enabled else 0.0,
             )
 
         nav_fresh = self._is_fresh(self.last_nav_cmd_time, self.nav_cmd_timeout_sec, now)
@@ -161,6 +187,15 @@ class ChassisNode(Node):
                 self.nav_target_vy,
                 0.0,
                 self.nav_target_wz,
+            )
+
+        if self.keyboard_small_gyro_enabled:
+            return (
+                "keyboard_spin",
+                0.0,
+                0.0,
+                0.0,
+                self.small_gyro_spin_rate,
             )
 
         return ("idle", 0.0, 0.0, 0.0, 0.0)
@@ -175,14 +210,14 @@ class ChassisNode(Node):
             for value in (
                 msg.linear.x,
                 msg.linear.y,
-                msg.linear.z,
+                msg.angular.x,
                 msg.angular.z,
             )
         )
 
     def timer_callback(self) -> None:
         now = self.get_clock().now()
-        selected_source, target_vx, target_vy, target_mode_z, target_gimbal_wz = (
+        selected_source, target_vx, target_vy, target_gimbal_wz, target_chassis_wz = (
             self._select_active_command(now)
         )
         dt = (now - self.last_step_time).nanoseconds / 1e9
@@ -193,15 +228,17 @@ class ChassisNode(Node):
 
         self.target_vx = target_vx
         self.target_vy = target_vy
-        self.target_mode_z = target_mode_z
         self.target_gimbal_wz = target_gimbal_wz
+        self.target_mode_z = target_chassis_wz
 
         max_linear_delta = self.max_linear_accel * dt
         max_angular_delta = self.max_angular_accel * dt
 
         self.current_vx = move_towards(self.current_vx, self.target_vx, max_linear_delta)
         self.current_vy = move_towards(self.current_vy, self.target_vy, max_linear_delta)
-        self.current_mode_z = self.target_mode_z
+        self.current_mode_z = move_towards(
+            self.current_mode_z, self.target_mode_z, max_angular_delta
+        )
         self.current_gimbal_wz = move_towards(
             self.current_gimbal_wz, self.target_gimbal_wz, max_angular_delta
         )
@@ -209,16 +246,17 @@ class ChassisNode(Node):
         msg = Twist()
         msg.linear.x = self.current_vx
         msg.linear.y = self.current_vy
-        msg.linear.z = self.current_mode_z
-        msg.angular.z = self.current_gimbal_wz
+        msg.linear.z = 0.0
+        msg.angular.x = self.current_gimbal_wz
+        msg.angular.z = self.current_mode_z
 
         if selected_source != self.last_selected_source:
             self.last_selected_source = selected_source
             self.get_logger().info(
                 "selected command source switched to "
                 f"{selected_source}: vx={self.target_vx:.2f}, "
-                f"vy={self.target_vy:.2f}, mode_z={self.target_mode_z:.2f}, "
-                f"angular.z={self.target_gimbal_wz:.2f}"
+                f"vy={self.target_vy:.2f}, gimbal_wz={self.target_gimbal_wz:.2f}, "
+                f"chassis_wz={self.target_mode_z:.2f}"
             )
 
         if not self._should_publish(selected_source, msg):
@@ -229,7 +267,7 @@ class ChassisNode(Node):
             publish_signature = (
                 msg.linear.x,
                 msg.linear.y,
-                msg.linear.z,
+                msg.angular.x,
                 msg.angular.z,
             )
             self.publisher.publish(msg)
@@ -237,13 +275,13 @@ class ChassisNode(Node):
                 self.last_publish_signature = publish_signature
                 self.get_logger().info(
                     f"published {selected_source}: vx={msg.linear.x:.2f}, "
-                    f"vy={msg.linear.y:.2f}, mode_z={msg.linear.z:.2f}, "
-                    f"angular.z={msg.angular.z:.2f}"
+                    f"vy={msg.linear.y:.2f}, gimbal_wz={msg.angular.x:.2f}, "
+                    f"chassis_wz={msg.angular.z:.2f}"
                 )
         except Exception as exc:
             if rclpy.ok():
                 self.get_logger().warn(
-                    f"failed to publish processed cmd_vel: {type(exc).__name__}: {exc}"
+                    f"failed to publish cmd_vel_chassis: {type(exc).__name__}: {exc}"
                 )
 
 

@@ -16,11 +16,14 @@ chassis:
     keyboard_cmd_vel_topic: /cmd_vel_keyboard
     nav_cmd_vel_topic: /cmd_vel_processed
     cmd_vel_out_topic: /cmd_vel_chassis
+    joint_state_topic: /joint_states
+    gimbal_joint_name: gimbal_yaw_joint
     publish_rate: 50.0
     max_linear_accel: 5.0
     max_angular_accel: 6.0
     keyboard_cmd_timeout_sec: 0.2
     nav_cmd_timeout_sec: 0.5
+    small_gyro_spin_rate: 6.0
 
 sentry_sim_node:
   ros__parameters:
@@ -28,10 +31,8 @@ sentry_sim_node:
     left_lidar_ip: 192.168.10.5
     right_lidar_ip: 192.168.10.3
     use_keep_stand: false
-    cmd_vel_topic: /cmd_vel_keyboard
-    nav_cmd_vel_topic: /cmd_vel_processed
-    keyboard_cmd_timeout_sec: 0.2
-    nav_cmd_timeout_sec: 0.5
+    chassis_cmd_vel_topic: /cmd_vel_chassis
+    cmd_vel_timeout_sec: 0.5
     small_gyro_spin_rate: 6.0
     tilt_downforce_threshold_deg: 15.0
     tilt_downforce_scale: 150.0

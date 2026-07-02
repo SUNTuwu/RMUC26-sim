@@ -12,12 +12,9 @@ Publishes:
   /joint_states                JointState
 
 Subscribes:
-  /cmd_vel_keyboard            Twist
-                               linear.x / linear.y: planar velocity in gimbal frame
-                               linear.z: keyboard small gyro trigger (>0.5 toggles spin mode)
-                               angular.z: gimbal yaw rate command
-  /cmd_vel_processed           Twist
+  /cmd_vel_chassis             Twist
                                linear.x / linear.y: planar velocity in base_link frame
+                               angular.x: desired gimbal yaw rate in world frame
                                angular.z: chassis yaw rate command
 """
 
@@ -439,18 +436,11 @@ class SentrySimNode(Node):
     def __init__(self):
         super().__init__("sentry_sim_node")
         self.enable_viewer = bool(self.declare_parameter("enable_viewer", True).value)
-        self.cmd_vel_topic = str(
-            self.declare_parameter("cmd_vel_topic", "/cmd_vel_keyboard").value
+        self.chassis_cmd_vel_topic = str(
+            self.declare_parameter("chassis_cmd_vel_topic", "/cmd_vel_chassis").value
         )
-        self.nav_cmd_vel_topic = str(
-            self.declare_parameter("nav_cmd_vel_topic", "/cmd_vel_processed").value
-        )
-        self.keyboard_cmd_timeout_sec = max(
-            float(self.declare_parameter("keyboard_cmd_timeout_sec", 0.2).value),
-            0.0,
-        )
-        self.nav_cmd_timeout_sec = max(
-            float(self.declare_parameter("nav_cmd_timeout_sec", 0.5).value),
+        self.cmd_vel_timeout_sec = max(
+            float(self.declare_parameter("cmd_vel_timeout_sec", 0.5).value),
             0.0,
         )
         self.small_gyro_spin_rate = float(
@@ -659,15 +649,11 @@ class SentrySimNode(Node):
         self.cmd_vx = 0.0
         self.cmd_vy = 0.0
         self.cmd_gimbal_yaw_rate = 0.0
-        self.cmd_small_gyro_mode = False
-        self.nav_cmd_vx = 0.0
-        self.nav_cmd_vy = 0.0
-        self.nav_cmd_wz = 0.0
+        self.cmd_chassis_wz = 0.0
         self.gimbal_heading_yaw = 0.0
         self.gimbal_joint_pos = 0.0
         self.gimbal_joint_vel = 0.0
         self.last_cmd_vel_time = self.get_clock().now()
-        self.last_nav_cmd_time = self.get_clock().now()
         self.active_cmd_source = "idle"
         self._lidar_debug_counter = 0
         self._initialize_odom_reference_locked()
@@ -717,12 +703,9 @@ class SentrySimNode(Node):
 
         # ── Subscriber ──
         self.cmd_vel_sub = self.create_subscription(
-            geometry_msgs.msg.Twist, self.cmd_vel_topic, self.cmd_vel_cb, 10
-        )
-        self.nav_cmd_vel_sub = self.create_subscription(
             geometry_msgs.msg.Twist,
-            self.nav_cmd_vel_topic,
-            self.nav_cmd_vel_cb,
+            self.chassis_cmd_vel_topic,
+            self.cmd_vel_cb,
             10,
         )
 
@@ -738,10 +721,8 @@ class SentrySimNode(Node):
         self.physics_thread.start()
 
         self.get_logger().info(
-            f"SentrySimNode ready. keyboard_cmd_vel_topic={self.cmd_vel_topic}, "
-            f"nav_cmd_vel_topic={self.nav_cmd_vel_topic}, "
-            f"keyboard_cmd_timeout_sec={self.keyboard_cmd_timeout_sec:.2f}, "
-            f"nav_cmd_timeout_sec={self.nav_cmd_timeout_sec:.2f}, "
+            f"SentrySimNode ready. chassis_cmd_vel_topic={self.chassis_cmd_vel_topic}, "
+            f"cmd_vel_timeout_sec={self.cmd_vel_timeout_sec:.2f}, "
             f"small_gyro_spin_rate={self.small_gyro_spin_rate:.2f}, "
             f"use_keep_stand={self.use_keep_stand}, "
             f"tilt_downforce_threshold_deg={self.tilt_downforce_threshold_deg:.1f}, "
@@ -929,23 +910,9 @@ class SentrySimNode(Node):
     def cmd_vel_cb(self, msg: geometry_msgs.msg.Twist):
         self.cmd_vx = float(msg.linear.x)
         self.cmd_vy = float(msg.linear.y)
-        self.cmd_gimbal_yaw_rate = float(msg.angular.z)
-        new_small_gyro_mode = bool(msg.linear.z > SMALL_GYRO_MODE_THRESHOLD)
-        if new_small_gyro_mode != self.cmd_small_gyro_mode:
-            self.cmd_small_gyro_mode = new_small_gyro_mode
-            self.get_logger().info(
-                "keyboard small gyro set "
-                f"{'on' if self.cmd_small_gyro_mode else 'off'}"
-            )
-        else:
-            self.cmd_small_gyro_mode = new_small_gyro_mode
+        self.cmd_gimbal_yaw_rate = float(msg.angular.x)
+        self.cmd_chassis_wz = float(msg.angular.z)
         self.last_cmd_vel_time = self.get_clock().now()
-
-    def nav_cmd_vel_cb(self, msg: geometry_msgs.msg.Twist):
-        self.nav_cmd_vx = float(msg.linear.x)
-        self.nav_cmd_vy = float(msg.linear.y)
-        self.nav_cmd_wz = float(msg.angular.z)
-        self.last_nav_cmd_time = self.get_clock().now()
 
     # ── Physics loop (runs in background thread) ──
     def physics_loop(self):
@@ -965,42 +932,18 @@ class SentrySimNode(Node):
                 now_ros = self.get_clock().now()
                 keyboard_fresh = self._is_cmd_fresh(
                     self.last_cmd_vel_time,
-                    self.keyboard_cmd_timeout_sec,
-                    now_ros,
-                )
-                nav_fresh = self._is_cmd_fresh(
-                    self.last_nav_cmd_time,
-                    self.nav_cmd_timeout_sec,
+                    self.cmd_vel_timeout_sec,
                     now_ros,
                 )
 
                 if keyboard_fresh:
-                    # Keyboard commands are defined in the main_gimbal_link heading frame.
                     self.gimbal_heading_yaw += self.cmd_gimbal_yaw_rate * PHYSICS_DT
-                    heading_yaw = self.gimbal_heading_yaw
-                    world_vx = self.cmd_vx * math.cos(heading_yaw) - self.cmd_vy * math.sin(heading_yaw)
-                    world_vy = self.cmd_vx * math.sin(heading_yaw) + self.cmd_vy * math.cos(heading_yaw)
-                    chassis_wz = self.small_gyro_spin_rate if self.cmd_small_gyro_mode else 0.0
+                    world_vx = self.cmd_vx * math.cos(base_yaw) - self.cmd_vy * math.sin(base_yaw)
+                    world_vy = self.cmd_vx * math.sin(base_yaw) + self.cmd_vy * math.cos(base_yaw)
+                    chassis_wz = self.cmd_chassis_wz
                     self.gimbal_joint_pos = wrap_to_pi(self.gimbal_heading_yaw - base_yaw)
                     self.gimbal_joint_vel = self.cmd_gimbal_yaw_rate - chassis_wz
-                    active_cmd_source = "keyboard"
-                elif self.cmd_small_gyro_mode:
-                    self.gimbal_heading_yaw = wrap_to_pi(self.gimbal_heading_yaw)
-                    world_vx = 0.0
-                    world_vy = 0.0
-                    chassis_wz = self.small_gyro_spin_rate
-                    self.gimbal_joint_pos = wrap_to_pi(self.gimbal_heading_yaw - base_yaw)
-                    self.gimbal_joint_vel = -chassis_wz
-                    active_cmd_source = "keyboard_spin"
-                elif nav_fresh:
-                    # Navigation commands are already base_link-frame chassis velocities.
-                    self.gimbal_heading_yaw = wrap_to_pi(base_yaw + self.gimbal_joint_pos)
-                    world_vx = self.nav_cmd_vx * math.cos(base_yaw) - self.nav_cmd_vy * math.sin(base_yaw)
-                    world_vy = self.nav_cmd_vx * math.sin(base_yaw) + self.nav_cmd_vy * math.cos(base_yaw)
-                    chassis_wz = self.nav_cmd_wz
-                    self.gimbal_joint_pos = wrap_to_pi(self.gimbal_heading_yaw - base_yaw)
-                    self.gimbal_joint_vel = -chassis_wz
-                    active_cmd_source = "nav"
+                    active_cmd_source = "chassis"
                 else:
                     self.gimbal_heading_yaw = wrap_to_pi(base_yaw + self.gimbal_joint_pos)
                     world_vx = 0.0

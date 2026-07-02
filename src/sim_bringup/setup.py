@@ -18,6 +18,10 @@ config_files = glob.glob('config/*.yaml')
 if config_files:
     data_files.append(('share/' + package_name + '/config', config_files))
 
+rviz_files = glob.glob('rviz/*.rviz')
+if rviz_files:
+    data_files.append(('share/' + package_name + '/rviz', rviz_files))
+
 setup(
     name=package_name,
     version='0.0.0',

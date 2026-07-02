@@ -10,6 +10,14 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, Pyth
 from launch_ros.actions import Node
 
 
+def _venv_python_prefix():
+    venv = os.environ.get("VIRTUAL_ENV")
+    if not venv:
+        return None
+    python_path = os.path.join(venv, "bin", "python3")
+    return python_path if os.path.exists(python_path) else None
+
+
 def _load_sim_lidar_topics():
     sim_bringup_pkg = get_package_share_directory("sim_bringup")
     sim_config_path = os.path.join(sim_bringup_pkg, "config", "sim_config.yaml")
@@ -31,7 +39,9 @@ def generate_launch_description():
     robot_type = LaunchConfiguration("robot_type")
     container_name = LaunchConfiguration("container_name")
     use_nav_rviz = LaunchConfiguration("use_nav_rviz")
+    python_prefix = _venv_python_prefix()
 
+    sim_bringup_pkg = get_package_share_directory("sim_bringup")
     main_bringup_pkg = get_package_share_directory("main_bringup")
     io_bringup_pkg = get_package_share_directory("io_bringup")
     mapping_bringup_pkg = get_package_share_directory("mapping_bringup")
@@ -39,6 +49,7 @@ def generate_launch_description():
     pointcloud_preprocessor_config = PathJoinSubstitution(
         [io_bringup_pkg, "config", "pointcloud_preprocessor.yaml"]
     )
+    serial_config_file = PathJoinSubstitution([io_bringup_pkg, "config", "ch343.yaml"])
     sim_lidar_topics = _load_sim_lidar_topics()
 
     prior_map_image_path = PythonExpression([
@@ -68,7 +79,7 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": use_sim_time,
             "prior_map_image_path": prior_map_image_path,
-            "fixed_frame": "odom",
+            # "fixed_frame": "odom",
         }.items(),
     )
 
@@ -96,8 +107,19 @@ def generate_launch_description():
         package="sim_core",
         executable="nav_feedback_adapter",
         name="nav_feedback_adapter",
+        prefix=python_prefix,
         output="screen",
         parameters=[{"use_sim_time": use_sim_time}],
+    )
+
+    nav_serial_plugin_node = Node(
+        package="nav_serial_driver_ch343",
+        executable="nav_serial_plugin_node",
+        name="nav_serial_plugin_node",
+        output="both",
+        emulate_tty=True,
+        parameters=[serial_config_file, {"use_sim_time": use_sim_time}],
+        ros_arguments=["--ros-args", "--log-level", "nav_serial_plugin_node:=INFO"],
     )
 
     nav_rviz = Node(
@@ -106,7 +128,7 @@ def generate_launch_description():
         name="nav_rviz2",
         arguments=[
             "-d",
-            PathJoinSubstitution([main_bringup_pkg, "rviz", "nav_visualization.rviz"]),
+            PathJoinSubstitution([sim_bringup_pkg, "rviz", "sim3d_visualization.rviz"]),
         ],
         parameters=[{"use_sim_time": use_sim_time}],
         output="both",
@@ -124,5 +146,6 @@ def generate_launch_description():
         nav_launch,
         map_to_odom_static_tf,
         nav_feedback_adapter,
+        nav_serial_plugin_node,
         nav_rviz,
     ])
