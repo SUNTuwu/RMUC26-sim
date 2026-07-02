@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<robot name="sentry_sim" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ============================================ -->
+  <!-- base_footprint (ground projection) -->
+  <!-- ============================================ -->
+  <link name="base_footprint"/>
+
+  <!-- ============================================ -->
+  <!-- base_link (chassis body) -->
+  <!-- ============================================ -->
+  <link name="base_link"/>
+
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================ -->
+  <!-- main_gimbal_link (upper structure, 0.25m above base) -->
+  <!-- ============================================ -->
+  <link name="main_gimbal_link"/>
+
+  <joint name="gimbal_yaw_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="main_gimbal_link"/>
+    <origin xyz="0 0 0.25" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <!-- ============================================ -->
+  <!-- main_gimbal_odom (LIO reference frame, coincident with main_gimbal_link) -->
+  <!-- ============================================ -->
+  <link name="main_gimbal_odom"/>
+
+  <joint name="gimbal_to_gimbal_odom" type="fixed">
+    <parent link="main_gimbal_link"/>
+    <child link="main_gimbal_odom"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================ -->
+  <!-- high_main_gimbal_link -->
+  <!-- ============================================ -->
+  <link name="high_main_gimbal_link"/>
+
+  <joint name="high_joint" type="fixed">
+    <parent link="main_gimbal_link"/>
+    <child link="high_main_gimbal_link"/>
+    <origin xyz="0 0 -0.25" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============================================ -->
+  <!-- left_livox_frame (Mid360 #1) -->
+  <!-- ============================================ -->
+  <link name="left_livox_frame"/>
+
+  <joint name="gimbal_to_left_livox" type="fixed">
+    <parent link="main_gimbal_link"/>
+    <child link="left_livox_frame"/>
+    <origin xyz="0.0 ${0.212} ${-0.051}" rpy="0 0 ${pi / 2}"/>
+  </joint>
+
+  <!-- ============================================ -->
+  <!-- right_livox_frame (Mid360 #2) -->
+  <!-- ============================================ -->
+  <link name="right_livox_frame"/>
+
+  <joint name="gimbal_to_right_livox" type="fixed">
+    <parent link="main_gimbal_link"/>
+    <child link="right_livox_frame"/>
+    <origin xyz="0.0 ${-0.212} ${-0.051}" rpy="0 0 ${-pi / 2}"/>
+  </joint>
+
+</robot>

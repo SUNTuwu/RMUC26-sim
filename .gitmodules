@@ -1,0 +1,3 @@
+[submodule "src/external/RM2026-sentry-ws"]
+	path = src/external/RM2026-sentry-ws
+	url = git@github.com:hkustenterprize-algo/RM2026-sentry-ws.git

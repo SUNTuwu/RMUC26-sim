@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sim_bringup</name>
+  <version>0.0.0</version>
+  <description>Sentry simulation bringup — MuJoCo bridge, LiDAR/IMU/odom publishers</description>
+  <maintainer email="sunnycat_158@qq.com">somo</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>ament_index_python</depend>
+  <depend>launch</depend>
+  <depend>launch_ros</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>sensor_msgs_py</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>std_msgs</depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>main_bringup</exec_depend>
+  <exec_depend>io_bringup</exec_depend>
+  <exec_depend>mapping_bringup</exec_depend>
+  <exec_depend>nav_bringup</exec_depend>
+  <exec_depend>pointcloud_preprocessor</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>sim_core</exec_depend>
+  <exec_depend>sim_assets</exec_depend>
+  <exec_depend>sim_description</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
