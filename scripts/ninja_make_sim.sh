@@ -1,8 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_WS="/home/somo/dev/sentry_sim"
-NAV_WS="/home/somo/dev/sentry_sim/src/external/RM2026-sentry-ws"
+ROOT_WS="."
+NAV_WS="./src/external/RM2026-sentry-ws"
+ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+ROS_DISTRO_UPPER="${ROS_DISTRO^^}"
+ROS_CXX_FLAGS="-DROS_${ROS_DISTRO_UPPER}"
+
+reset_ros_env() {
+  unset AMENT_PREFIX_PATH
+  unset COLCON_PREFIX_PATH
+  unset CMAKE_PREFIX_PATH
+  unset LD_LIBRARY_PATH
+  unset PYTHONPATH
+  unset PKG_CONFIG_PATH
+  unset ROS_PACKAGE_PATH
+  unset ROS_ETC_DIR
+  unset ROS_ROOT
+}
+
+cleanup_root_overlay_residue() {
+  local pkg
+  for pkg in "${IGNORED_EXTERNAL_PACKAGES[@]}"; do
+    rm -rf "${ROOT_WS}/build/${pkg}" "${ROOT_WS}/install/${pkg}"
+  done
+}
+
 IGNORED_EXTERNAL_PACKAGES=(
   auto_aim_interfaces
   customized_client_msgs
@@ -20,11 +43,16 @@ IGNORED_EXTERNAL_PACKAGES=(
   main_bringup
 )
 
-if [[ -f "/opt/ros/${ROS_DISTRO:-humble}/setup.bash" ]]; then
+reset_ros_env
+
+if [[ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
   set +u
   # shellcheck disable=SC1090
-  source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+  source "/opt/ros/${ROS_DISTRO}/setup.bash"
   set -u
+else
+  echo "ROS setup not found: /opt/ros/${ROS_DISTRO}/setup.bash" >&2
+  exit 1
 fi
 
 if [[ -f "${NAV_WS}/install/setup.bash" ]]; then
@@ -36,6 +64,8 @@ fi
 
 cd "${ROOT_WS}"
 
+cleanup_root_overlay_residue
+
 colcon build \
   --symlink-install \
   --executor sequential \
@@ -45,4 +75,4 @@ colcon build \
     sim_core \
     sim_bringup \
   --packages-ignore "${IGNORED_EXTERNAL_PACKAGES[@]}" \
-  --cmake-args -G Ninja
+  --cmake-args -G Ninja "-DCMAKE_CXX_FLAGS=${ROS_CXX_FLAGS}"

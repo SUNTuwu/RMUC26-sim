@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_WS="/home/somo/dev/sentry_sim"
-NAV_WS="/home/somo/dev/sentry_sim/src/external/RM2026-sentry-ws"
-ROS_CMAKE_DEFINE=""
+ROOT_WS="."
+NAV_WS="./src/external/RM2026-sentry-ws"
+ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+ROS_DISTRO_UPPER="${ROS_DISTRO^^}"
+ROS_CXX_FLAGS="-DROS_${ROS_DISTRO_UPPER}"
+
+reset_ros_env() {
+  unset AMENT_PREFIX_PATH
+  unset COLCON_PREFIX_PATH
+  unset CMAKE_PREFIX_PATH
+  unset LD_LIBRARY_PATH
+  unset PYTHONPATH
+  unset PKG_CONFIG_PATH
+  unset ROS_PACKAGE_PATH
+  unset ROS_ETC_DIR
+  unset ROS_ROOT
+}
 NAV_PACKAGES=(
   auto_aim_interfaces
   customized_client_msgs
@@ -21,27 +35,16 @@ NAV_PACKAGES=(
   main_bringup
 )
 
-if [[ -f "/opt/ros/${ROS_DISTRO:-humble}/setup.bash" ]]; then
+reset_ros_env
+
+if [[ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
   set +u
   # shellcheck disable=SC1090
-  source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+  source "/opt/ros/${ROS_DISTRO}/setup.bash"
   set -u
-fi
-
-case "${ROS_DISTRO:-humble}" in
-  jazzy)
-    ROS_CMAKE_DEFINE="-DROS_JAZZY=1"
-    ;;
-  humble)
-    ROS_CMAKE_DEFINE="-DROS_HUMBLE=1"
-    ;;
-esac
-
-if [[ -f "${ROOT_WS}/install/setup.bash" ]]; then
-  set +u
-  # shellcheck disable=SC1091
-  source "${ROOT_WS}/install/setup.bash"
-  set -u
+else
+  echo "ROS setup not found: /opt/ros/${ROS_DISTRO}/setup.bash" >&2
+  exit 1
 fi
 
 cd "${NAV_WS}"
@@ -55,4 +58,4 @@ colcon build \
   --symlink-install \
   --executor sequential \
   --packages-select "${NAV_PACKAGES[@]}" \
-  --cmake-args -G Ninja "${ROS_CMAKE_DEFINE}"
+  --cmake-args -G Ninja "-DCMAKE_CXX_FLAGS=${ROS_CXX_FLAGS}"
