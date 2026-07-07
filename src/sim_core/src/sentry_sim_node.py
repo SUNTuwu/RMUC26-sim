@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-"""
-sentry_sim_node.py — MuJoCo simulation bridge for sentry robot.
+"""sentry_sim_node.py — MuJoCo simulation bridge for sentry robot.
 
 Publishes:
-  /livox/lidar_192_168_10_5/pointcloud    PointCloud2 (left LiDAR, 10 Hz)
-  /livox/lidar_192_168_10_4/pointcloud    PointCloud2 (right LiDAR, 10 Hz)
-  /livox/imu_192_168_10_5      Imu (from left LiDAR's built-in IMU, 200 Hz)
-  /livox/imu_192_168_10_4      Imu (from right LiDAR's built-in IMU, 200 Hz)
-  /Odometry                    Odometry (50 Hz)
-  /tf                          TF broadcast
-  /joint_states                JointState
+  /livox/lidar_192_168_10_5                 CustomMsg (left LiDAR, 10 Hz)
+  /livox/lidar_192_168_10_5/pointcloud      PointCloud2 (left LiDAR, 10 Hz)
+  /livox/lidar_192_168_10_3                 CustomMsg (right LiDAR, 10 Hz)
+  /livox/lidar_192_168_10_3/pointcloud      PointCloud2 (right LiDAR, 10 Hz)
+  /livox/imu_192_168_10_5                   Imu (from left LiDAR's built-in IMU, 200 Hz)
+  /livox/imu_192_168_10_3                   Imu (from right LiDAR's built-in IMU, 200 Hz)
+  /joint_states                  JointState
 
 Subscribes:
   /cmd_vel_chassis             Twist
-                               linear.x / linear.y: planar velocity in base_link frame
-                               angular.x: desired gimbal yaw rate in world frame
-                               angular.z: chassis yaw rate command
+                               linear.x / linear.y: planar velocity in main_gimbal_link frame
+                               linear.z: unused, always 0.0
+                               angular.x: desired base_link yaw rate in world frame
+                               angular.y: unused, always 0.0
+                               angular.z: desired main_gimbal_link yaw rate in world frame
 """
 
 import importlib
@@ -31,34 +32,33 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from rclpy.time import Time
 
 import geometry_msgs.msg
-import nav_msgs.msg
 import rosgraph_msgs.msg
 import sensor_msgs.msg
 import std_msgs.msg
-import tf2_ros
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
-from geometry_msgs.msg import TransformStamped
+
+from livox_ros_driver2.msg import CustomMsg, CustomPoint
+from sim_core.livox_bridge import ranges_to_custom_msg
 
 import mujoco
 from mujoco_lidar import MjLidarWrapper
 from mujoco_lidar.scan_gen import LivoxGenerator
 
 
-# ── Robot geometry (from 26_sentry_tunnel.urdf.xacro) ──────────────────────
-# main_gimbal_link → left_livox_frame:  xyz=(0, 0.212, -0.051)
-# main_gimbal_link → right_livox_frame: xyz=(0, -0.212, -0.051)
-# main_gimbal_link → base_link:         xyz=(0, 0, -0.25)
+# ── Robot geometry (from 26_sentry_tall.urdf.xacro) ────────────────────────
+# main_gimbal_link → left_livox_frame:  xyz=(0, 0.180765, 0)
+# main_gimbal_link → right_livox_frame: xyz=(0, -0.180765, 0)
+# main_gimbal_link → base_link:         xyz=(0, 0, -0.34264)
 # LiDAR positions relative to base_link:
-#   left:  (0,  0.212, 0.25 - 0.051) = (0,  0.212, 0.199)
-#   right: (0, -0.212, 0.25 - 0.051) = (0, -0.212, 0.199)
+#   left:  (0,  0.180765, 0.34264)
+#   right: (0, -0.180765, 0.34264)
 
-LIDAR_Y_OFFSET = 0.212
-GIMBAL_Z = 0.25
-LIDAR_Z_IN_GIMBAL = -0.051
-LIDAR_Z = GIMBAL_Z + LIDAR_Z_IN_GIMBAL  # 0.199
+LIDAR_Y_OFFSET = 0.180765
+GIMBAL_Z = 0.34264
+LIDAR_Z_IN_GIMBAL = 0.0
+LIDAR_Z = GIMBAL_Z + LIDAR_Z_IN_GIMBAL
 LEFT_LIDAR_YAW = math.pi / 2.0
 RIGHT_LIDAR_YAW = -math.pi / 2.0
 CHASSIS_DISC_RADIUS = 0.225
@@ -66,27 +66,25 @@ CHASSIS_DISC_HALF_HEIGHT = 0.03
 CHASSIS_DISC_Z = -0.055
 
 # TF frames
-FRAME_ODOM = "odom"
-FRAME_BASE_FOOTPRINT = "base_footprint"
 FRAME_BASE_LINK = "base_link"
 FRAME_GIMBAL = "main_gimbal_link"
 FRAME_LEFT_LIVOX = "left_livox_frame"
 FRAME_RIGHT_LIVOX = "right_livox_frame"
 FRAME_GIMBAL_ODOM = "main_gimbal_odom"
-JOINT_GIMBAL_YAW = "gimbal_yaw_joint"
+JOINT_GIMBAL_YAW = "gimbal_to_base"
 
 # LiDAR params
 LIDAR_CUTOFF = 30.0   # max range (m)
 LIDAR_RATE = 10.0     # Hz
 IMU_RATE = 200.0      # Hz
-ODOM_RATE = 50.0      # Hz
+LIDAR_SCAN_PERIOD_NS = int(1_000_000_000 / LIDAR_RATE)
+MID360_POINTS_PER_SCAN = 24000
+GRAVITY_M_S2 = 9.81
 PHYSICS_DT = 0.002    # 500 Hz physics
 SPAWN_X = 0.0
 SPAWN_Y = 0.0
 SPAWN_Z = 10.0
 DEFAULT_ROBOT_INIT_LOCATION = (SPAWN_X, SPAWN_Y, SPAWN_Z)
-SMALL_GYRO_MODE_THRESHOLD = 0.5
-
 RENDER_GEOM_GROUP = 1
 LIDAR_TRACE_GEOM_GROUP = 0
 LIDAR_DEBUG_GEOM_GROUP = 3
@@ -98,16 +96,15 @@ DEFAULT_BOUNDARY_X_MIN = -13.5
 DEFAULT_BOUNDARY_X_MAX = 13.5
 DEFAULT_BOUNDARY_Y_MIN = -7.0
 DEFAULT_BOUNDARY_Y_MAX = 7.0
-DEFAULT_MAX_TILT_DEG = 30.0
 DEFAULT_USE_KEEP_STAND = False
 DEFAULT_TILT_DOWNFORCE_THRESHOLD_DEG = 15.0
-DEFAULT_TILT_DOWNFORCE_SCALE = 150.0
+DEFAULT_TILT_DOWNFORCE_SCALE = 300.0
 DEFAULT_TILT_DOWNFORCE_EXP_GAIN = 6.0
 
 # #region debug-point A:report-helper
-DEBUG_SESSION_ENV = ".dbg/pointcloud-no-output.env"
+DEBUG_SESSION_ENV = ".dbg/custommsg-all-zero.env"
 DEBUG_DEFAULT_SERVER_URL = "http://127.0.0.1:7777/event"
-DEBUG_DEFAULT_SESSION_ID = "pointcloud-no-output"
+DEBUG_DEFAULT_SESSION_ID = "custommsg-all-zero"
 
 
 def debug_report(hypothesis_id: str, location: str, msg: str, data: dict | None = None, run_id: str = "pre-fix") -> None:
@@ -143,6 +140,57 @@ def debug_report(hypothesis_id: str, location: str, msg: str, data: dict | None 
         pass
 
 # #endregion
+
+
+def summarize_custom_msg(msg: CustomMsg) -> dict:
+    total_points = int(msg.point_num)
+    zero_xyz_count = 0
+    tag_valid_count = 0
+    tag_zero_count = 0
+    nonzero_reflectivity_count = 0
+    first_valid_index = None
+    first_nonzero_xyz_index = None
+    sample_points = []
+
+    sample_limit = min(total_points, 6)
+    for i in range(total_points):
+        pt = msg.points[i]
+        if i < sample_limit:
+            sample_points.append(
+                {
+                    "idx": int(i),
+                    "x": float(pt.x),
+                    "y": float(pt.y),
+                    "z": float(pt.z),
+                    "reflectivity": int(pt.reflectivity),
+                    "tag": int(pt.tag),
+                    "line": int(pt.line),
+                    "offset_time": int(pt.offset_time),
+                }
+            )
+        if pt.tag == 0x10:
+            tag_valid_count += 1
+            if first_valid_index is None:
+                first_valid_index = int(i)
+        elif pt.tag == 0x00:
+            tag_zero_count += 1
+        if pt.reflectivity != 0:
+            nonzero_reflectivity_count += 1
+        if abs(float(pt.x)) <= 1e-9 and abs(float(pt.y)) <= 1e-9 and abs(float(pt.z)) <= 1e-9:
+            zero_xyz_count += 1
+        elif first_nonzero_xyz_index is None:
+            first_nonzero_xyz_index = int(i)
+
+    return {
+        "point_num": total_points,
+        "tag_valid_count": tag_valid_count,
+        "tag_zero_count": tag_zero_count,
+        "zero_xyz_count": zero_xyz_count,
+        "nonzero_reflectivity_count": nonzero_reflectivity_count,
+        "first_valid_index": first_valid_index,
+        "first_nonzero_xyz_index": first_nonzero_xyz_index,
+        "sample_points": sample_points,
+    }
 
 
 def _list_obj_files(directory: str) -> list[str]:
@@ -234,7 +282,13 @@ def rpy_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, fl
 
 
 def lidar_pointcloud_topic_from_ip(ip_address: str) -> str:
-    return f"/livox/lidar_{ip_address.replace('.', '_')}/pointcloud"
+    """Return the Livox CustomMsg topic name (mimics real driver)."""
+    return f"/livox/lidar_{ip_address.replace('.', '_')}"
+
+
+def lidar_pointcloud2_topic_from_ip(ip_address: str) -> str:
+    """Return the Livox PointCloud2 topic name (mimics real driver)."""
+    return f"{lidar_pointcloud_topic_from_ip(ip_address)}/pointcloud"
 
 
 def lidar_imu_topic_from_ip(ip_address: str) -> str:
@@ -348,74 +402,73 @@ def make_scene_xml(
 {boundary_geom_xml}
     </body>
 
-    <!-- ===== base_link (top-level dynamic body) ===== -->
-    <body name="{FRAME_BASE_LINK}" pos="{spawn_x} {spawn_y} {spawn_z}">
-      <freejoint name="base_freejoint"/>
+    <!-- ===== main_gimbal_link (top-level dynamic body) ===== -->
+    <body name="{FRAME_GIMBAL}" pos="{spawn_x} {spawn_y} {spawn_z}">
+      <freejoint name="gimbal_freejoint"/>
 
-      <geom name="chassis" type="box" size="0.225 0.225 0.01"
-            material="mat_chassis" mass="0"
-            contype="0" conaffinity="0" condim="3"
-            friction="0 0 0" group="1"/>
-      <geom name="chassis_contact_base" type="cylinder"
-            size="{CHASSIS_DISC_RADIUS} {CHASSIS_DISC_HALF_HEIGHT}"
-            pos="0 0 {CHASSIS_DISC_Z}" material="mat_chassis" mass="20.0"
+      <geom name="gimbal_geom" type="box" size="0.11 0.11 0.04"
+            material="mat_gimbal" mass="0"
+            contype="0" conaffinity="0" group="1"/>
+      <!-- Two slim boxes form a backward-pointing triangular marker. -->
+      <geom name="gimbal_pointer_left" type="box" size="0.055 0.012 0.04"
+            pos="-0.13 0.03 0" euler="0 0 2.54159265"
+            material="mat_gimbal_arrow" rgba="0.9 0.1 0.1 1.0"
+            mass="0" contype="0" conaffinity="0" group="1"/>
+      <geom name="gimbal_pointer_right" type="box" size="0.055 0.012 0.04"
+            pos="-0.13 -0.03 0" euler="0 0 -2.54159265"
+            material="mat_gimbal_arrow" rgba="0.9 0.1 0.1 1.0"
+            mass="0" contype="0" conaffinity="0" group="1"/>
+      <geom name="gimbal_collision" type="box" size="0.17 0.17 0.09"
+            rgba="0 0 0 0" mass="0"
             contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
             friction="0 0 0" group="1"/>
 
-        <!-- ===== main_gimbal_link ===== -->
-        <body name="{FRAME_GIMBAL}" pos="0 0 {GIMBAL_Z}">
-          <joint name="{JOINT_GIMBAL_YAW}" type="hinge" axis="0 0 1" damping="0"/>
-          <geom name="gimbal_geom" type="box" size="0.11 0.11 0.04"
-                material="mat_gimbal" mass="0"
-                contype="0" conaffinity="0" group="1"/>
-          <!-- Two slim boxes form a backward-pointing triangular marker. -->
-          <geom name="gimbal_pointer_left" type="box" size="0.055 0.012 0.04"
-                pos="-0.13 0.03 0" euler="0 0 2.54159265"
-                material="mat_gimbal_arrow" rgba="0.9 0.1 0.1 1.0"
-                mass="0" contype="0" conaffinity="0" group="1"/>
-          <geom name="gimbal_pointer_right" type="box" size="0.055 0.012 0.04"
-                pos="-0.13 -0.03 0" euler="0 0 -2.54159265"
-                material="mat_gimbal_arrow" rgba="0.9 0.1 0.1 1.0"
-                mass="0" contype="0" conaffinity="0" group="1"/>
-          <geom name="gimbal_collision" type="box" size="0.17 0.17 0.09"
-                rgba="0 0 0 0" mass="0"
-                contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
-                friction="0 0 0" group="1"/>
-
-          <!-- ===== main_gimbal_odom (for LIO reference) ===== -->
-          <body name="{FRAME_GIMBAL_ODOM}" pos="0 0 0">
-            <geom name="gimbal_odom_geom" type="sphere" size="0.001"
-                  rgba="0 0 0 0" mass="0" contype="0" conaffinity="0" group="1"/>
-          </body>
-
-          <!-- ===== left_livox_frame =====
-               Match the LiDAR body orientation to the URDF joint so the traced rays
-               and the published frame use the same local axes. -->
-          <body name="{FRAME_LEFT_LIVOX}" pos="0 {LIDAR_Y_OFFSET} {LIDAR_Z_IN_GIMBAL}"
-                euler="0 0 {LEFT_LIDAR_YAW}">
-            <geom name="left_lidar_vis" type="cylinder" size="0.035 0.025"
-                  material="mat_lidar" mass="0.265"
-                  contype="0" conaffinity="0" group="1"/>
-            <inertial pos="0 0 0" mass="0.265" diaginertia="0.0001 0.0001 0.0001"/>
-
-            <!-- LiDAR ray-casting site (identity orientation, rays in +x hemisphere) -->
-            <site name="left_lidar_site" type="sphere" size="0.01" rgba="1 0 0 0.5"/>
-          </body>
-
-          <!-- ===== right_livox_frame ===== -->
-          <body name="{FRAME_RIGHT_LIVOX}" pos="0 {-LIDAR_Y_OFFSET} {LIDAR_Z_IN_GIMBAL}"
-                euler="0 0 {RIGHT_LIDAR_YAW}">
-            <geom name="right_lidar_vis" type="cylinder" size="0.035 0.025"
-                  material="mat_lidar" mass="0.265"
-                  contype="0" conaffinity="0" group="1"/>
-            <inertial pos="0 0 0" mass="0.265" diaginertia="0.0001 0.0001 0.0001"/>
-
-            <!-- LiDAR ray-casting site -->
-            <site name="right_lidar_site" type="sphere" size="0.01" rgba="1 0 0 0.5"/>
-          </body>
-
-        </body>
+      <!-- ===== main_gimbal_odom (for LIO reference) ===== -->
+      <body name="{FRAME_GIMBAL_ODOM}" pos="0 0 0">
+        <geom name="gimbal_odom_geom" type="sphere" size="0.001"
+              rgba="0 0 0 0" mass="0" contype="0" conaffinity="0" group="1"/>
       </body>
+
+      <!-- ===== left_livox_frame =====
+           Match the LiDAR body orientation to the URDF joint so the traced rays
+           and the published frame use the same local axes. -->
+      <body name="{FRAME_LEFT_LIVOX}" pos="0 {LIDAR_Y_OFFSET} {LIDAR_Z_IN_GIMBAL}"
+            euler="0 0 {LEFT_LIDAR_YAW}">
+        <geom name="left_lidar_vis" type="cylinder" size="0.035 0.025"
+              material="mat_lidar" mass="0.265"
+              contype="0" conaffinity="0" group="1"/>
+        <inertial pos="0 0 0" mass="0.265" diaginertia="0.0001 0.0001 0.0001"/>
+
+        <!-- LiDAR ray-casting site (identity orientation, rays in +x hemisphere) -->
+        <site name="left_lidar_site" type="sphere" size="0.01" rgba="1 0 0 0.5"/>
+      </body>
+
+      <!-- ===== right_livox_frame ===== -->
+      <body name="{FRAME_RIGHT_LIVOX}" pos="0 {-LIDAR_Y_OFFSET} {LIDAR_Z_IN_GIMBAL}"
+            euler="0 0 {RIGHT_LIDAR_YAW}">
+        <geom name="right_lidar_vis" type="cylinder" size="0.035 0.025"
+              material="mat_lidar" mass="0.265"
+              contype="0" conaffinity="0" group="1"/>
+        <inertial pos="0 0 0" mass="0.265" diaginertia="0.0001 0.0001 0.0001"/>
+
+        <!-- LiDAR ray-casting site -->
+        <site name="right_lidar_site" type="sphere" size="0.01" rgba="1 0 0 0.5"/>
+      </body>
+
+      <!-- ===== base_link ===== -->
+      <body name="{FRAME_BASE_LINK}" pos="0 0 {-GIMBAL_Z}">
+        <joint name="{JOINT_GIMBAL_YAW}" type="hinge" axis="0 0 1" damping="0"/>
+        <geom name="chassis" type="box" size="0.225 0.225 0.01"
+              material="mat_chassis" mass="0"
+              contype="0" conaffinity="0" condim="3"
+              friction="0 0 0" group="1"/>
+        <geom name="chassis_contact_base" type="cylinder"
+              size="{CHASSIS_DISC_RADIUS} {CHASSIS_DISC_HALF_HEIGHT}"
+              pos="0 0 {CHASSIS_DISC_Z}" material="mat_chassis" mass="20.0"
+              contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
+              friction="0 0 0" group="1"/>
+      </body>
+    </body>
   </worldbody>
 
   <sensor>
@@ -443,9 +496,6 @@ class SentrySimNode(Node):
             float(self.declare_parameter("cmd_vel_timeout_sec", 0.5).value),
             0.0,
         )
-        self.small_gyro_spin_rate = float(
-            self.declare_parameter("small_gyro_spin_rate", 6.0).value
-        )
         self.boundary_x_min = float(
             self.declare_parameter("boundary_x_min", DEFAULT_BOUNDARY_X_MIN).value
         )
@@ -457,9 +507,6 @@ class SentrySimNode(Node):
         )
         self.boundary_y_max = float(
             self.declare_parameter("boundary_y_max", DEFAULT_BOUNDARY_Y_MAX).value
-        )
-        self.max_tilt_deg = float(
-            self.declare_parameter("max_tilt_deg", DEFAULT_MAX_TILT_DEG).value
         )
         self.use_keep_stand = bool(
             self.declare_parameter("use_keep_stand", DEFAULT_USE_KEEP_STAND).value
@@ -502,13 +549,14 @@ class SentrySimNode(Node):
             self.declare_parameter("left_lidar_ip", "192.168.10.5").value
         )
         self.right_lidar_ip = str(
-            self.declare_parameter("right_lidar_ip", "192.168.10.4").value
+            self.declare_parameter("right_lidar_ip", "192.168.10.3").value
         )
-        self.left_pointcloud_topic = lidar_pointcloud_topic_from_ip(self.left_lidar_ip)
-        self.right_pointcloud_topic = lidar_pointcloud_topic_from_ip(self.right_lidar_ip)
+        self.left_custom_topic = lidar_pointcloud_topic_from_ip(self.left_lidar_ip)
+        self.right_custom_topic = lidar_pointcloud_topic_from_ip(self.right_lidar_ip)
+        self.left_pointcloud_topic = lidar_pointcloud2_topic_from_ip(self.left_lidar_ip)
+        self.right_pointcloud_topic = lidar_pointcloud2_topic_from_ip(self.right_lidar_ip)
         self.left_imu_topic = lidar_imu_topic_from_ip(self.left_lidar_ip)
         self.right_imu_topic = lidar_imu_topic_from_ip(self.right_lidar_ip)
-        self.max_tilt_rad = math.radians(max(self.max_tilt_deg, 0.0))
         self.tilt_downforce_threshold_rad = math.radians(self.tilt_downforce_threshold_deg)
         if self.boundary_x_min >= self.boundary_x_max:
             raise ValueError("boundary_x_min must be smaller than boundary_x_max")
@@ -564,6 +612,11 @@ class SentrySimNode(Node):
             raise RuntimeError(f"MuJoCo joint not found: {JOINT_GIMBAL_YAW}")
         self.gimbal_qpos_adr = self.model.jnt_qposadr[self.gimbal_joint_id]
         self.gimbal_dof_adr = self.model.jnt_dofadr[self.gimbal_joint_id]
+        self.gimbal_body_id = int(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, FRAME_GIMBAL)
+        )
+        if self.gimbal_body_id < 0:
+            raise RuntimeError(f"MuJoCo body not found: {FRAME_GIMBAL}")
         self.base_body_id = int(
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, FRAME_BASE_LINK)
         )
@@ -582,7 +635,7 @@ class SentrySimNode(Node):
         # that can use it, while group 1 is excluded to avoid self hits.
         lidar_args = {
             'geomgroup': np.array([1, 0, 1, 0, 0, 0], dtype=np.uint8),
-            'bodyexclude': int(mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, FRAME_BASE_LINK)),
+            'bodyexclude': self.gimbal_body_id,
         }
         self.lidar_left = MjLidarWrapper(
             self.model, site_name="left_lidar_site",
@@ -610,11 +663,16 @@ class SentrySimNode(Node):
         )
         # #endregion
 
-        # Mid360 scan pattern (24000 rays)
-        lg = LivoxGenerator("mid360")
-        self.ray_theta, self.ray_phi = lg.sample_ray_angles()
-        self.n_rays = len(self.ray_theta)
-        self.get_logger().info(f"Mid360 scan pattern: {self.n_rays} rays")
+        # Mid360 scan pattern. Use the 24000-point frame size used by the
+        # reference stack and downstream point_lio setup in this workspace.
+        # The generator still advances through the full 800000-point pattern.
+        self.livox_generator = LivoxGenerator("mid360")
+        self.livox_generator.samples = MID360_POINTS_PER_SCAN
+        self.n_rays = self.livox_generator.samples
+        self.get_logger().info(
+            f"Mid360 scan pattern: {self.n_rays} rays/frame "
+            f"(full pattern size={self.livox_generator.n_rays})"
+        )
         # #region debug-point B:scan-pattern
         debug_report(
             "B",
@@ -622,22 +680,10 @@ class SentrySimNode(Node):
             "Loaded LiDAR scan pattern",
             {
                 "n_rays": int(self.n_rays),
-                "theta_shape": list(self.ray_theta.shape),
-                "phi_shape": list(self.ray_phi.shape),
+                "pattern_size": int(self.livox_generator.n_rays),
             },
         )
         # #endregion
-
-        # Precompute ray directions in local frame
-        cos_theta = np.cos(self.ray_theta)
-        sin_theta = np.sin(self.ray_theta)
-        cos_phi = np.cos(self.ray_phi)
-        sin_phi = np.sin(self.ray_phi)
-        self.ray_dirs = np.stack([
-            cos_theta * cos_phi,
-            sin_theta * cos_phi,
-            sin_phi
-        ], axis=1)  # (N, 3)
 
         # ── Odometry state ──
         self.odom_x = 0.0
@@ -648,8 +694,8 @@ class SentrySimNode(Node):
         self.odom_origin_yaw = 0.0
         self.cmd_vx = 0.0
         self.cmd_vy = 0.0
+        self.cmd_chassis_yaw_rate = 0.0
         self.cmd_gimbal_yaw_rate = 0.0
-        self.cmd_chassis_wz = 0.0
         self.gimbal_heading_yaw = 0.0
         self.gimbal_joint_pos = 0.0
         self.gimbal_joint_vel = 0.0
@@ -659,11 +705,6 @@ class SentrySimNode(Node):
         self._initialize_odom_reference_locked()
 
         # ── Publishers ──
-        pointcloud_qos = QoSProfile(
-            depth=10,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE
-        )
         sensor_qos = QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -676,14 +717,24 @@ class SentrySimNode(Node):
         )
 
         self.pc_left_pub = self.create_publisher(
-            sensor_msgs.msg.PointCloud2,
-            self.left_pointcloud_topic,
-            pointcloud_qos,
+            CustomMsg,
+            self.left_custom_topic,
+            sensor_qos,
         )
         self.pc_right_pub = self.create_publisher(
+            CustomMsg,
+            self.right_custom_topic,
+            sensor_qos,
+        )
+        self.pc2_left_pub = self.create_publisher(
+            sensor_msgs.msg.PointCloud2,
+            self.left_pointcloud_topic,
+            sensor_qos,
+        )
+        self.pc2_right_pub = self.create_publisher(
             sensor_msgs.msg.PointCloud2,
             self.right_pointcloud_topic,
-            pointcloud_qos,
+            sensor_qos,
         )
         self.imu_left_pub = self.create_publisher(
             sensor_msgs.msg.Imu, self.left_imu_topic, sensor_qos
@@ -691,15 +742,9 @@ class SentrySimNode(Node):
         self.imu_right_pub = self.create_publisher(
             sensor_msgs.msg.Imu, self.right_imu_topic, sensor_qos
         )
-        self.odom_pub = self.create_publisher(
-            nav_msgs.msg.Odometry, "/Odometry", 10
-        )
         self.joint_state_pub = self.create_publisher(
             sensor_msgs.msg.JointState, "/joint_states", 10
         )
-
-        # ── TF broadcaster ──
-        self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
         # ── Subscriber ──
         self.cmd_vel_sub = self.create_subscription(
@@ -712,7 +757,7 @@ class SentrySimNode(Node):
         # ── Timers ──
         self.lidar_timer = self.create_timer(1.0 / LIDAR_RATE, self.lidar_callback)
         self.imu_timer = self.create_timer(1.0 / IMU_RATE, self.imu_callback)
-        self.odom_timer = self.create_timer(1.0 / ODOM_RATE, self.odom_callback)
+        self.joint_state_timer = self.create_timer(0.01, self.joint_state_callback)
 
         # ── Physics loop thread ──
         self.running = True
@@ -723,17 +768,17 @@ class SentrySimNode(Node):
         self.get_logger().info(
             f"SentrySimNode ready. chassis_cmd_vel_topic={self.chassis_cmd_vel_topic}, "
             f"cmd_vel_timeout_sec={self.cmd_vel_timeout_sec:.2f}, "
-            f"small_gyro_spin_rate={self.small_gyro_spin_rate:.2f}, "
             f"use_keep_stand={self.use_keep_stand}, "
             f"tilt_downforce_threshold_deg={self.tilt_downforce_threshold_deg:.1f}, "
             f"tilt_downforce_scale={self.tilt_downforce_scale:.1f}, "
             f"tilt_downforce_exp_gain={self.tilt_downforce_exp_gain:.2f}, "
             f"robot_init_location={list(self.robot_init_location)}, "
+            f"left_custom_topic={self.left_custom_topic}, "
+            f"right_custom_topic={self.right_custom_topic}, "
             f"left_pointcloud_topic={self.left_pointcloud_topic}, "
             f"right_pointcloud_topic={self.right_pointcloud_topic}, "
             f"boundary_x=[{self.boundary_x_min:.2f}, {self.boundary_x_max:.2f}], "
-            f"boundary_y=[{self.boundary_y_min:.2f}, {self.boundary_y_max:.2f}], "
-            f"max_tilt_deg={self.max_tilt_deg:.1f}"
+            f"boundary_y=[{self.boundary_y_min:.2f}, {self.boundary_y_max:.2f}]"
         )
 
     def _start_viewer_if_requested(self):
@@ -819,7 +864,7 @@ class SentrySimNode(Node):
             gravity_dir,
             self.keep_stand_geomgroup,
             True,
-            self.base_body_id,
+            self.gimbal_body_id,
             geomid,
             surface_normal,
         )
@@ -859,8 +904,8 @@ class SentrySimNode(Node):
     def _compute_tilt_downforce(self, quat: np.ndarray) -> tuple[float, float]:
         rot_mat = np.zeros(9, dtype=np.float64)
         mujoco.mju_quat2Mat(rot_mat, quat)
-        base_z_axis = rot_mat.reshape(3, 3)[:, 2]
-        cos_tilt = clamp(float(base_z_axis[2]), -1.0, 1.0)
+        body_z_axis = rot_mat.reshape(3, 3)[:, 2]
+        cos_tilt = clamp(float(body_z_axis[2]), -1.0, 1.0)
         tilt_rad = math.acos(cos_tilt)
         tilt_excess = max(0.0, tilt_rad - self.tilt_downforce_threshold_rad)
         if tilt_excess <= 0.0:
@@ -880,25 +925,24 @@ class SentrySimNode(Node):
         self.viewer = None
 
     def _initialize_odom_reference_locked(self):
-        """Make odom start at the current base position and initial gimbal heading."""
-        base_pos = self.data.qpos[0:3]
-        base_quat = self.data.qpos[3:7]
-        base_yaw = math.atan2(
-            2.0 * (base_quat[0] * base_quat[3] + base_quat[1] * base_quat[2]),
-            1.0 - 2.0 * (base_quat[2] ** 2 + base_quat[3] ** 2),
+        """Make odom start at the current gimbal pose and base relative joint angle."""
+        gimbal_pos = self.data.qpos[0:3]
+        gimbal_quat = self.data.qpos[3:7]
+        gimbal_yaw = math.atan2(
+            2.0 * (gimbal_quat[0] * gimbal_quat[3] + gimbal_quat[1] * gimbal_quat[2]),
+            1.0 - 2.0 * (gimbal_quat[2] ** 2 + gimbal_quat[3] ** 2),
         )
         current_gimbal_joint_pos = float(self.data.qpos[self.gimbal_qpos_adr])
-        initial_gimbal_world_yaw = wrap_to_pi(base_yaw + current_gimbal_joint_pos)
 
-        self.odom_origin_x = float(base_pos[0])
-        self.odom_origin_y = float(base_pos[1])
-        self.odom_origin_yaw = initial_gimbal_world_yaw
-        self.gimbal_heading_yaw = initial_gimbal_world_yaw
+        self.odom_origin_x = float(gimbal_pos[0])
+        self.odom_origin_y = float(gimbal_pos[1])
+        self.odom_origin_yaw = gimbal_yaw
+        self.gimbal_heading_yaw = gimbal_yaw
         self.gimbal_joint_pos = current_gimbal_joint_pos
         self.gimbal_joint_vel = 0.0
         self.odom_x = 0.0
         self.odom_y = 0.0
-        self.odom_yaw = wrap_to_pi(base_yaw - self.odom_origin_yaw)
+        self.odom_yaw = 0.0
 
     def _is_cmd_fresh(self, stamp, timeout_sec: float, now) -> bool:
         if timeout_sec <= 0.0:
@@ -910,8 +954,8 @@ class SentrySimNode(Node):
     def cmd_vel_cb(self, msg: geometry_msgs.msg.Twist):
         self.cmd_vx = float(msg.linear.x)
         self.cmd_vy = float(msg.linear.y)
-        self.cmd_gimbal_yaw_rate = float(msg.angular.x)
-        self.cmd_chassis_wz = float(msg.angular.z)
+        self.cmd_chassis_yaw_rate = float(msg.angular.x)
+        self.cmd_gimbal_yaw_rate = float(msg.angular.z)
         self.last_cmd_vel_time = self.get_clock().now()
 
     # ── Physics loop (runs in background thread) ──
@@ -920,36 +964,44 @@ class SentrySimNode(Node):
         last_clock = 0.0
         while self.running and rclpy.ok():
             with self.physics_lock:
-                base_quat = self.data.qpos[3:7]
-                base_yaw = math.atan2(
-                    2.0 * (base_quat[0] * base_quat[3] + base_quat[1] * base_quat[2]),
-                    1.0 - 2.0 * (base_quat[2] ** 2 + base_quat[3] ** 2)
+                gimbal_quat = self.data.qpos[3:7]
+                gimbal_yaw = math.atan2(
+                    2.0 * (gimbal_quat[0] * gimbal_quat[3] + gimbal_quat[1] * gimbal_quat[2]),
+                    1.0 - 2.0 * (gimbal_quat[2] ** 2 + gimbal_quat[3] ** 2)
                 )
+                current_joint_pos = float(self.data.qpos[self.gimbal_qpos_adr])
+                base_yaw = wrap_to_pi(gimbal_yaw + current_joint_pos)
+                base_quat = self.data.xquat[self.base_body_id].copy()
                 tilt_rad, tilt_downforce = self._compute_tilt_downforce(base_quat)
+                self.data.xfrc_applied[self.gimbal_body_id, :] = 0.0
                 self.data.xfrc_applied[self.base_body_id, :] = 0.0
                 if tilt_downforce > 0.0:
+                    # Apply extra world-frame downforce on the chassis body when
+                    # base_link tilts away from upright.
                     self.data.xfrc_applied[self.base_body_id, 2] = -tilt_downforce
                 now_ros = self.get_clock().now()
-                keyboard_fresh = self._is_cmd_fresh(
+                cmd_fresh = self._is_cmd_fresh(
                     self.last_cmd_vel_time,
                     self.cmd_vel_timeout_sec,
                     now_ros,
                 )
 
-                if keyboard_fresh:
-                    self.gimbal_heading_yaw += self.cmd_gimbal_yaw_rate * PHYSICS_DT
-                    world_vx = self.cmd_vx * math.cos(base_yaw) - self.cmd_vy * math.sin(base_yaw)
-                    world_vy = self.cmd_vx * math.sin(base_yaw) + self.cmd_vy * math.cos(base_yaw)
-                    chassis_wz = self.cmd_chassis_wz
-                    self.gimbal_joint_pos = wrap_to_pi(self.gimbal_heading_yaw - base_yaw)
-                    self.gimbal_joint_vel = self.cmd_gimbal_yaw_rate - chassis_wz
+                if cmd_fresh:
+                    self.gimbal_heading_yaw = wrap_to_pi(
+                        gimbal_yaw + self.cmd_gimbal_yaw_rate * PHYSICS_DT
+                    )
+                    world_vx = self.cmd_vx * math.cos(gimbal_yaw) - self.cmd_vy * math.sin(gimbal_yaw)
+                    world_vy = self.cmd_vx * math.sin(gimbal_yaw) + self.cmd_vy * math.cos(gimbal_yaw)
+                    chassis_wz = self.cmd_chassis_yaw_rate
+                    next_base_yaw = wrap_to_pi(base_yaw + chassis_wz * PHYSICS_DT)
+                    self.gimbal_joint_pos = wrap_to_pi(next_base_yaw - self.gimbal_heading_yaw)
+                    self.gimbal_joint_vel = chassis_wz - self.cmd_gimbal_yaw_rate
                     active_cmd_source = "chassis"
                 else:
-                    self.gimbal_heading_yaw = wrap_to_pi(base_yaw + self.gimbal_joint_pos)
+                    self.gimbal_heading_yaw = gimbal_yaw
                     world_vx = 0.0
                     world_vy = 0.0
-                    chassis_wz = 0.0
-                    self.gimbal_joint_pos = wrap_to_pi(self.gimbal_heading_yaw - base_yaw)
+                    self.gimbal_joint_pos = current_joint_pos
                     self.gimbal_joint_vel = 0.0
                     active_cmd_source = "idle"
 
@@ -962,13 +1014,13 @@ class SentrySimNode(Node):
                 self.data.qpos[self.gimbal_qpos_adr] = self.gimbal_joint_pos
                 self.data.qvel[0] = world_vx
                 self.data.qvel[1] = world_vy
-                self.data.qvel[5] = chassis_wz
+                self.data.qvel[5] = self.cmd_gimbal_yaw_rate if cmd_fresh else 0.0
                 self.data.qvel[self.gimbal_dof_adr] = self.gimbal_joint_vel
 
                 mujoco.mj_step(self.model, self.data)
 
                 quat = self.data.qpos[3:7].copy()
-                roll, pitch, yaw = quat_to_rpy(quat)
+                _, _, yaw = quat_to_rpy(quat)
                 if self.use_keep_stand:
                     aligned_quat = self._compute_surface_aligned_quat(
                         self.data.qpos[0:3].copy(),
@@ -976,28 +1028,6 @@ class SentrySimNode(Node):
                     )
                     if aligned_quat is not None:
                         self.data.qpos[3:7] = aligned_quat
-                        self.data.qvel[3] = 0.0
-                        self.data.qvel[4] = 0.0
-                    else:
-                        clamped_roll = clamp(roll, -self.max_tilt_rad, self.max_tilt_rad)
-                        clamped_pitch = clamp(pitch, -self.max_tilt_rad, self.max_tilt_rad)
-                        if (
-                            abs(clamped_roll - roll) > 1e-6
-                            or abs(clamped_pitch - pitch) > 1e-6
-                        ):
-                            limited_quat = rpy_to_quat(clamped_roll, clamped_pitch, yaw)
-                            self.data.qpos[3:7] = limited_quat
-                            self.data.qvel[3] = 0.0
-                            self.data.qvel[4] = 0.0
-                else:
-                    clamped_roll = clamp(roll, -self.max_tilt_rad, self.max_tilt_rad)
-                    clamped_pitch = clamp(pitch, -self.max_tilt_rad, self.max_tilt_rad)
-                    if (
-                        abs(clamped_roll - roll) > 1e-6
-                        or abs(clamped_pitch - pitch) > 1e-6
-                    ):
-                        limited_quat = rpy_to_quat(clamped_roll, clamped_pitch, yaw)
-                        self.data.qpos[3:7] = limited_quat
                         self.data.qvel[3] = 0.0
                         self.data.qvel[4] = 0.0
 
@@ -1015,9 +1045,11 @@ class SentrySimNode(Node):
                     self.data.qpos[1] = self.boundary_y_max
                     self.data.qvel[1] = min(0.0, self.data.qvel[1])
 
+                self.gimbal_joint_pos = float(self.data.qpos[self.gimbal_qpos_adr])
+                self.gimbal_joint_vel = float(self.data.qvel[self.gimbal_dof_adr])
                 pos = self.data.qpos[0:3]
                 quat = self.data.qpos[3:7]
-                base_yaw = math.atan2(
+                gimbal_yaw = math.atan2(
                     2.0 * (quat[0] * quat[3] + quat[1] * quat[2]),
                     1.0 - 2.0 * (quat[2]**2 + quat[3]**2)
                 )
@@ -1027,7 +1059,7 @@ class SentrySimNode(Node):
                 sin_origin = math.sin(self.odom_origin_yaw)
                 self.odom_x = cos_origin * dx + sin_origin * dy
                 self.odom_y = -sin_origin * dx + cos_origin * dy
-                self.odom_yaw = wrap_to_pi(base_yaw - self.odom_origin_yaw)
+                self.odom_yaw = wrap_to_pi(gimbal_yaw - self.odom_origin_yaw)
                 self._sync_viewer()
 
             # Publish clock at ~100Hz (from physics thread, not ROS timer)
@@ -1046,13 +1078,15 @@ class SentrySimNode(Node):
 
     # ── LiDAR callback ──
     def lidar_callback(self):
-        """Publish PointCloud2 for both LiDARs."""
+        """Publish Livox CustomMsg for both LiDARs."""
         with self.physics_lock:
+            ray_theta, ray_phi = self.livox_generator.sample_ray_angles()
+            ray_dirs = self._angles_to_ray_dirs(ray_theta, ray_phi)
             ranges_left = self.lidar_left.trace_rays(
-                self.data, self.ray_theta, self.ray_phi
+                self.data, ray_theta, ray_phi
             )
             ranges_right = self.lidar_right.trace_rays(
-                self.data, self.ray_theta, self.ray_phi
+                self.data, ray_theta, ray_phi
             )
         self._lidar_debug_counter += 1
         left_valid = int(np.sum((ranges_left > 0.1) & (ranges_left < LIDAR_CUTOFF)))
@@ -1075,35 +1109,61 @@ class SentrySimNode(Node):
             )
             # #endregion
 
-        # Convert to PointCloud2 in LiDAR's local frame
-        pc_left = self._ranges_to_pointcloud(ranges_left, FRAME_LEFT_LIVOX)
-        pc_right = self._ranges_to_pointcloud(ranges_right, FRAME_RIGHT_LIVOX)
-
+        # Convert to Livox CustomMsg and PointCloud2 in each LiDAR's local frame.
         now = self.get_clock().now().to_msg()
-        pc_left.header.stamp = now
-        pc_right.header.stamp = now
+        msg_left = ranges_to_custom_msg(
+            ranges_left, ray_dirs, ray_theta, ray_phi,
+            FRAME_LEFT_LIVOX, now, lidar_id=5, scan_period_ns=LIDAR_SCAN_PERIOD_NS,
+        )
+        msg_right = ranges_to_custom_msg(
+            ranges_right, ray_dirs, ray_theta, ray_phi,
+            FRAME_RIGHT_LIVOX, now, lidar_id=3, scan_period_ns=LIDAR_SCAN_PERIOD_NS,
+        )
+        pc2_left = self._ranges_to_pointcloud(ranges_left, ray_dirs, FRAME_LEFT_LIVOX, now)
+        pc2_right = self._ranges_to_pointcloud(ranges_right, ray_dirs, FRAME_RIGHT_LIVOX, now)
 
-        self.pc_left_pub.publish(pc_left)
-        self.pc_right_pub.publish(pc_right)
+        self.pc_left_pub.publish(msg_left)
+        self.pc_right_pub.publish(msg_right)
+        self.pc2_left_pub.publish(pc2_left)
+        self.pc2_right_pub.publish(pc2_right)
         if self._lidar_debug_counter <= 3 or self._lidar_debug_counter % 20 == 0:
             # #region debug-point D:pointcloud-publish
+            left_summary = summarize_custom_msg(msg_left)
+            right_summary = summarize_custom_msg(msg_right)
             debug_report(
                 "D",
                 "sentry_sim_node.py:792",
-                "Published pointcloud messages",
+                "Published Livox CustomMsg",
                 {
                     "iteration": int(self._lidar_debug_counter),
-                    "left_width": int(pc_left.width),
-                    "right_width": int(pc_right.width),
-                    "left_frame": pc_left.header.frame_id,
-                    "right_frame": pc_right.header.frame_id,
+                    "left_points": int(msg_left.point_num),
+                    "right_points": int(msg_right.point_num),
+                    "left_frame": msg_left.header.frame_id,
+                    "right_frame": msg_right.header.frame_id,
                     "left_subscribers": int(self.pc_left_pub.get_subscription_count()),
                     "right_subscribers": int(self.pc_right_pub.get_subscription_count()),
+                    "left_pc2_width": int(pc2_left.width),
+                    "right_pc2_width": int(pc2_right.width),
+                    "left_pc2_subscribers": int(self.pc2_left_pub.get_subscription_count()),
+                    "right_pc2_subscribers": int(self.pc2_right_pub.get_subscription_count()),
+                    "left_summary": left_summary,
+                    "right_summary": right_summary,
                 },
             )
             # #endregion
 
-    def _ranges_to_pointcloud(self, ranges, frame_id):
+    def _angles_to_ray_dirs(self, ray_theta: np.ndarray, ray_phi: np.ndarray) -> np.ndarray:
+        cos_theta = np.cos(ray_theta)
+        sin_theta = np.sin(ray_theta)
+        cos_phi = np.cos(ray_phi)
+        sin_phi = np.sin(ray_phi)
+        return np.stack([
+            cos_theta * cos_phi,
+            sin_theta * cos_phi,
+            sin_phi,
+        ], axis=1)
+
+    def _ranges_to_pointcloud(self, ranges, ray_dirs, frame_id, stamp):
         """Convert range array + precomputed ray directions to PointCloud2."""
         from sensor_msgs_py import point_cloud2
 
@@ -1123,6 +1183,7 @@ class SentrySimNode(Node):
             )
             # #endregion
             pc = sensor_msgs.msg.PointCloud2()
+            pc.header.stamp = stamp
             pc.header.frame_id = frame_id
             pc.height = 1
             pc.width = 0
@@ -1137,7 +1198,7 @@ class SentrySimNode(Node):
             pc.row_step = 0
             return pc
 
-        points_local = self.ray_dirs[valid] * ranges[valid, np.newaxis]  # (N, 3)
+        points_local = ray_dirs[valid] * ranges[valid, np.newaxis]  # (N, 3)
         intensities = np.ones(n_valid, dtype=np.float32)
 
         # Build structured array
@@ -1162,6 +1223,7 @@ class SentrySimNode(Node):
             std_msgs.msg.Header(),
             fields, cloud_data
         )
+        pc.header.stamp = stamp
         pc.header.frame_id = frame_id
         return pc
 
@@ -1187,9 +1249,12 @@ class SentrySimNode(Node):
         msg.header.stamp = stamp
         msg.header.frame_id = frame_id
 
-        msg.linear_acceleration.x = float(acc[0])
-        msg.linear_acceleration.y = float(acc[1])
-        msg.linear_acceleration.z = float(acc[2])
+        # Livox IMU acceleration is interpreted downstream as "g", not m/s^2.
+        acc_in_g = acc / GRAVITY_M_S2
+
+        msg.linear_acceleration.x = float(acc_in_g[0])
+        msg.linear_acceleration.y = float(acc_in_g[1])
+        msg.linear_acceleration.z = float(acc_in_g[2])
 
         msg.angular_velocity.x = float(gyro[0])
         msg.angular_velocity.y = float(gyro[1])
@@ -1219,56 +1284,13 @@ class SentrySimNode(Node):
             self._build_imu_message(stamp, FRAME_RIGHT_LIVOX, right_acc, right_gyro)
         )
 
-    # ── Odometry + TF callback ──
-    def odom_callback(self):
-        """Publish odometry and TF tree."""
-        now = self.get_clock().now()
-        now_msg = now.to_msg()
-
+    # ── Joint state callback ──
+    def joint_state_callback(self):
+        """Publish simulated gimbal joint state for robot_state_publisher."""
+        now_msg = self.get_clock().now().to_msg()
         with self.physics_lock:
-            x = self.odom_x
-            y = self.odom_y
-            yaw = self.odom_yaw
-            vx = self.data.qvel[0]
-            vy = self.data.qvel[1]
-            omega = self.data.qvel[5]
             gimbal_joint_pos = self.gimbal_joint_pos
             gimbal_joint_vel = self.gimbal_joint_vel
-
-        # Quaternion from yaw
-        qw = math.cos(yaw / 2.0)
-        qz = math.sin(yaw / 2.0)
-
-        # ── TF: only odom → base_footprint (dynamic).
-        #     All other TFs (base_footprint→base_link→gimbal→livox) come from
-        #     robot_state_publisher via the URDF description.
-        tf_odom_fp = TransformStamped()
-        tf_odom_fp.header.stamp = now_msg
-        tf_odom_fp.header.frame_id = FRAME_ODOM
-        tf_odom_fp.child_frame_id = FRAME_BASE_FOOTPRINT
-        tf_odom_fp.transform.translation.x = float(x)
-        tf_odom_fp.transform.translation.y = float(y)
-        tf_odom_fp.transform.translation.z = 0.0
-        tf_odom_fp.transform.rotation.w = float(qw)
-        tf_odom_fp.transform.rotation.z = float(qz)
-
-        self.tf_broadcaster.sendTransform(tf_odom_fp)
-
-        # ── Odometry message ──
-        odom = nav_msgs.msg.Odometry()
-        odom.header.stamp = now_msg
-        odom.header.frame_id = FRAME_ODOM
-        odom.child_frame_id = FRAME_BASE_FOOTPRINT
-        odom.pose.pose.position.x = float(x)
-        odom.pose.pose.position.y = float(y)
-        odom.pose.pose.orientation.w = float(qw)
-        odom.pose.pose.orientation.z = float(qz)
-        odom.twist.twist.linear.x = float(vx)
-        odom.twist.twist.linear.y = float(vy)
-        odom.twist.twist.angular.z = float(omega)
-
-        self.odom_pub.publish(odom)
-
         joint_state = sensor_msgs.msg.JointState()
         joint_state.header.stamp = now_msg
         joint_state.name = [JOINT_GIMBAL_YAW]

@@ -71,7 +71,6 @@ colcon build \
   --executor sequential \
   --packages-select \
     sim_assets \
-    sim_description \
     sim_core \
     sim_bringup \
   --packages-ignore "${IGNORED_EXTERNAL_PACKAGES[@]}" \

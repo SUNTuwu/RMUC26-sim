@@ -3,42 +3,28 @@ keyboard_test:
     cmd_vel_topic: /cmd_vel_keyboard
     linear_speed: 5.0
     gimbal_yaw_speed: 7.0
-    small_gyro_mode_value: 1.0
-    publish_rate: 100.0
-    keyboard_backend: auto
-    keyboard_device_path: ""
-    tty_key_hold_sec: 0.18
-    scripted_keys: ""
-    script_step_sec: 0.2
 
 chassis:
   ros__parameters:
     keyboard_cmd_vel_topic: /cmd_vel_keyboard
     nav_cmd_vel_topic: /cmd_vel_processed
     cmd_vel_out_topic: /cmd_vel_chassis
-    joint_state_topic: /joint_states
-    gimbal_joint_name: gimbal_yaw_joint
-    publish_rate: 50.0
-    max_linear_accel: 5.0
-    max_angular_accel: 6.0
-    keyboard_cmd_timeout_sec: 0.2
-    nav_cmd_timeout_sec: 0.5
+    publish_rate: 100.0
     small_gyro_spin_rate: 6.0
+    small_gyro_toggle_timeout_sec: 1.0
 
 sentry_sim_node:
   ros__parameters:
-    robot_init_location: [-4.0,-4.0,0.5]
+    robot_init_location: [-10.0,0.0,0.5]
     left_lidar_ip: 192.168.10.5
     right_lidar_ip: 192.168.10.3
     use_keep_stand: false
     chassis_cmd_vel_topic: /cmd_vel_chassis
     cmd_vel_timeout_sec: 0.5
-    small_gyro_spin_rate: 6.0
-    tilt_downforce_threshold_deg: 15.0
-    tilt_downforce_scale: 150.0
+    tilt_downforce_threshold_deg: 10.0
+    tilt_downforce_scale: 300.0
     tilt_downforce_exp_gain: 6.0
     boundary_x_min: -13.6
     boundary_x_max: 13.6
     boundary_y_min: -7.0
     boundary_y_max: 7.0
-    max_tilt_deg: 30.0

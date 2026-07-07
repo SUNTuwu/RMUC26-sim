@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch keyboard_test and chassis nodes for command-path verification."""
+"""Launch only keyboard_test for command-path verification."""
 
 import os
 
@@ -52,15 +52,6 @@ def generate_launch_description():
                     "scripted_keys": LaunchConfiguration("scripted_keys"),
                 },
             ],
-            output="screen",
-            emulate_tty=True,
-        ),
-        Node(
-            package="sim_core",
-            executable="chassis",
-            name="chassis",
-            prefix=python_prefix,
-            parameters=[params_file],
             output="screen",
             emulate_tty=True,
         ),

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Simplified test launch — no Xvfb, just the core nodes."""
 import os
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, Command
@@ -17,11 +16,13 @@ def _venv_python_prefix():
     return python_path if os.path.exists(python_path) else None
 
 
+def _workspace_bringup_file(relative_path):
+    return os.path.join(os.getcwd(), "src", "sim_bringup", relative_path)
+
+
 def generate_launch_description():
-    bringup_pkg = get_package_share_directory('sim_bringup')
-    desc_pkg = get_package_share_directory('sim_description')
-    xacro_path = os.path.join(desc_pkg, 'urdf', 'sentry.urdf.xacro')
-    params_file = os.path.join(bringup_pkg, 'config', 'sim_config.yaml')
+    xacro_path = _workspace_bringup_file(os.path.join('urdf', 'sentry.urdf.xacro'))
+    params_file = _workspace_bringup_file(os.path.join('config', 'sim_config.yaml'))
     python_prefix = _venv_python_prefix()
 
     robot_desc = ParameterValue(

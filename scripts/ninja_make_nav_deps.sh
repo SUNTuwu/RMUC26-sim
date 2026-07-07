@@ -26,6 +26,7 @@ NAV_PACKAGES=(
   nav_serial_driver_ch343
   livox_ros_driver2
   pointcloud_preprocessor
+  point_lio
   io_bringup
   dynamic_rog_map
   nav2_trapezoid_smoother

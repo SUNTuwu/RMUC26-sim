@@ -17,8 +17,8 @@
   <depend>std_msgs</depend>
   <depend>rosgraph_msgs</depend>
   <depend>auto_aim_interfaces</depend>
+  <depend>livox_ros_driver2</depend>
   <exec_depend>sim_assets</exec_depend>
-  <exec_depend>sim_description</exec_depend>
   <exec_depend>python3-evdev</exec_depend>
   <exec_depend>python3-pynput</exec_depend>
 

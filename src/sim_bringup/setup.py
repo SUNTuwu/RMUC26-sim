@@ -22,6 +22,10 @@ rviz_files = glob.glob('rviz/*.rviz')
 if rviz_files:
     data_files.append(('share/' + package_name + '/rviz', rviz_files))
 
+urdf_files = glob.glob('urdf/*')
+if urdf_files:
+    data_files.append(('share/' + package_name + '/urdf', urdf_files))
+
 setup(
     name=package_name,
     version='0.0.0',

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge MuJoCo sim topics to the minimal feedback topics expected by external nav stacks."""
+"""Bridge Point-LIO gimbal odometry to chassis odometry for sim navigation."""
 
 import math
 
@@ -7,57 +7,86 @@ import rclpy
 from auto_aim_interfaces.msg import Cvmode, SentryGimbalCommand
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.time import Time
 from sensor_msgs.msg import JointState
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
-def yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    return math.atan2(siny_cosp, cosy_cosp)
+def quaternion_conjugate(
+    q: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    x, y, z, w = q
+    return (-x, -y, -z, w)
 
 
-def quaternion_from_yaw(yaw: float) -> tuple[float, float, float, float]:
-    half_yaw = yaw * 0.5
-    return (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
+def quaternion_multiply(
+    lhs: tuple[float, float, float, float],
+    rhs: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    lx, ly, lz, lw = lhs
+    rx, ry, rz, rw = rhs
+    return (
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+        lw * rw - lx * rx - ly * ry - lz * rz,
+    )
+
+
+def rotate_vector(
+    q: tuple[float, float, float, float], v: tuple[float, float, float]
+) -> tuple[float, float, float]:
+    q_vec = (v[0], v[1], v[2], 0.0)
+    q_rotated = quaternion_multiply(
+        quaternion_multiply(q, q_vec), quaternion_conjugate(q)
+    )
+    return (q_rotated[0], q_rotated[1], q_rotated[2])
+
+
+def normalize_quaternion(
+    q: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    norm = math.sqrt(sum(component * component for component in q))
+    if norm <= 1e-12:
+        return (0.0, 0.0, 0.0, 1.0)
+    return tuple(component / norm for component in q)
 
 
 class NavFeedbackAdapter(Node):
-    """Publishes external-style gimbal feedback topics from MuJoCo sim state."""
+    """Publishes chassis odometry and external feedback topics for sim navigation."""
 
     def __init__(self) -> None:
         super().__init__("nav_feedback_adapter")
 
-        self.declare_parameter("odom_topic", "/Odometry")
         self.declare_parameter("gimbal_odom_topic", "/gimbal_Odometry")
+        self.declare_parameter("odom_topic", "/Odometry")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter("cv_mode_topic", "/serial_driver/cv_mode")
         self.declare_parameter(
             "sentry_gimbal_command_topic",
             "/serial_driver/sentry_gimbal_command",
         )
-        self.declare_parameter("gimbal_joint_name", "gimbal_yaw_joint")
-        self.declare_parameter("gimbal_link_frame", "main_gimbal_link")
-        self.declare_parameter("gimbal_height", 0.25)
+        self.declare_parameter("gimbal_joint_name", "gimbal_to_base")
+        self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("publish_rate", 50.0)
         self.declare_parameter("armor_mode", 0)
         self.declare_parameter("bullet_speed", 28.0)
         self.declare_parameter("shoot_delay", 0.07)
         self.declare_parameter("command_timeout_sec", 0.5)
 
-        self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.gimbal_odom_topic = str(self.get_parameter("gimbal_odom_topic").value)
+        self.odom_topic = str(self.get_parameter("odom_topic").value)
         self.joint_state_topic = str(self.get_parameter("joint_state_topic").value)
         self.cv_mode_topic = str(self.get_parameter("cv_mode_topic").value)
         self.sentry_gimbal_command_topic = str(
             self.get_parameter("sentry_gimbal_command_topic").value
         )
         self.gimbal_joint_name = str(self.get_parameter("gimbal_joint_name").value)
-        self.gimbal_link_frame = str(self.get_parameter("gimbal_link_frame").value)
-        self.gimbal_height = float(self.get_parameter("gimbal_height").value)
+        self.base_frame = str(self.get_parameter("base_frame").value)
         self.armor_mode = int(self.get_parameter("armor_mode").value)
         self.bullet_speed = float(self.get_parameter("bullet_speed").value)
         self.shoot_delay = float(self.get_parameter("shoot_delay").value)
@@ -67,13 +96,19 @@ class NavFeedbackAdapter(Node):
         )
         publish_rate = max(float(self.get_parameter("publish_rate").value), 1.0)
 
-        self.latest_odom: Odometry | None = None
-        self.gimbal_joint_pos = 0.0
+        self.latest_gimbal_odom: Odometry | None = None
         self.gimbal_joint_vel = 0.0
         self.current_target_id = 255
         self.last_command_time = self.get_clock().now()
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.create_subscription(Odometry, self.odom_topic, self.odom_callback, 10)
+        self.create_subscription(
+            Odometry,
+            self.gimbal_odom_topic,
+            self.gimbal_odom_callback,
+            10,
+        )
         self.create_subscription(
             JointState,
             self.joint_state_topic,
@@ -87,18 +122,18 @@ class NavFeedbackAdapter(Node):
             10,
         )
 
-        self.gimbal_odom_pub = self.create_publisher(Odometry, self.gimbal_odom_topic, 10)
+        self.odom_pub = self.create_publisher(Odometry, self.odom_topic, 10)
         self.cv_mode_pub = self.create_publisher(Cvmode, self.cv_mode_topic, 10)
         self.create_timer(1.0 / publish_rate, self.publish_feedback)
 
         self.get_logger().info(
             "nav feedback adapter ready: "
-            f"odom={self.odom_topic}, gimbal_odom={self.gimbal_odom_topic}, "
+            f"gimbal_odom={self.gimbal_odom_topic}, odom={self.odom_topic}, "
             f"cv_mode={self.cv_mode_topic}"
         )
 
-    def odom_callback(self, msg: Odometry) -> None:
-        self.latest_odom = msg
+    def gimbal_odom_callback(self, msg: Odometry) -> None:
+        self.latest_gimbal_odom = msg
 
     def joint_state_callback(self, msg: JointState) -> None:
         try:
@@ -106,8 +141,6 @@ class NavFeedbackAdapter(Node):
         except ValueError:
             return
 
-        if index < len(msg.position):
-            self.gimbal_joint_pos = float(msg.position[index])
         if index < len(msg.velocity):
             self.gimbal_joint_vel = float(msg.velocity[index])
 
@@ -119,44 +152,81 @@ class NavFeedbackAdapter(Node):
         age = (self.get_clock().now() - self.last_command_time).nanoseconds / 1e9
         return age <= self.command_timeout_sec
 
-    def publish_gimbal_odom(self) -> None:
-        if self.latest_odom is None:
+    def publish_chassis_odom(self) -> None:
+        if self.latest_gimbal_odom is None:
             return
 
-        source = self.latest_odom
-        base_orientation = source.pose.pose.orientation
-        base_yaw = yaw_from_quaternion(
-            base_orientation.x,
-            base_orientation.y,
-            base_orientation.z,
-            base_orientation.w,
-        )
-        gimbal_yaw = math.atan2(
-            math.sin(base_yaw + self.gimbal_joint_pos),
-            math.cos(base_yaw + self.gimbal_joint_pos),
-        )
-        qx, qy, qz, qw = quaternion_from_yaw(gimbal_yaw)
+        source = self.latest_gimbal_odom
+        child_frame_id = source.child_frame_id or "left_livox_frame"
 
-        gimbal_odom = Odometry()
-        gimbal_odom.header = source.header
-        gimbal_odom.child_frame_id = self.gimbal_link_frame
-        gimbal_odom.pose.pose.position.x = source.pose.pose.position.x
-        gimbal_odom.pose.pose.position.y = source.pose.pose.position.y
-        gimbal_odom.pose.pose.position.z = source.pose.pose.position.z + self.gimbal_height
-        gimbal_odom.pose.pose.orientation.x = qx
-        gimbal_odom.pose.pose.orientation.y = qy
-        gimbal_odom.pose.pose.orientation.z = qz
-        gimbal_odom.pose.pose.orientation.w = qw
-        gimbal_odom.twist.twist.linear.x = source.twist.twist.linear.x
-        gimbal_odom.twist.twist.linear.y = source.twist.twist.linear.y
-        gimbal_odom.twist.twist.linear.z = source.twist.twist.linear.z
-        gimbal_odom.twist.twist.angular.x = source.twist.twist.angular.x
-        gimbal_odom.twist.twist.angular.y = source.twist.twist.angular.y
-        gimbal_odom.twist.twist.angular.z = (
-            source.twist.twist.angular.z + self.gimbal_joint_vel
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame, child_frame_id, Time()
+            )
+        except TransformException as ex:
+            self.get_logger().warn(
+                f"failed to transform odometry {child_frame_id} -> {self.base_frame}: {ex}",
+                throttle_duration_sec=1.0,
+            )
+            return
+
+        tf_translation = transform.transform.translation
+        tf_rotation = transform.transform.rotation
+        q_base_child = normalize_quaternion(
+            (tf_rotation.x, tf_rotation.y, tf_rotation.z, tf_rotation.w)
+        )
+        q_child_base = quaternion_conjugate(q_base_child)
+
+        source_orientation = source.pose.pose.orientation
+        q_odom_child = normalize_quaternion(
+            (
+                source_orientation.x,
+                source_orientation.y,
+                source_orientation.z,
+                source_orientation.w,
+            )
+        )
+        q_odom_base = normalize_quaternion(
+            quaternion_multiply(q_odom_child, q_child_base)
         )
 
-        self.gimbal_odom_pub.publish(gimbal_odom)
+        child_to_base_translation = rotate_vector(
+            q_child_base,
+            (-tf_translation.x, -tf_translation.y, -tf_translation.z),
+        )
+        base_position_delta = rotate_vector(q_odom_child, child_to_base_translation)
+
+        source_linear = source.twist.twist.linear
+        source_angular = source.twist.twist.angular
+        linear_in_base = rotate_vector(
+            q_base_child,
+            (source_linear.x, source_linear.y, source_linear.z),
+        )
+        angular_in_base = rotate_vector(
+            q_base_child,
+            (source_angular.x, source_angular.y, source_angular.z),
+        )
+
+        chassis_odom = Odometry()
+        chassis_odom.header = source.header
+        chassis_odom.child_frame_id = self.base_frame
+        chassis_odom.pose = source.pose
+        chassis_odom.pose.pose.position.x += base_position_delta[0]
+        chassis_odom.pose.pose.position.y += base_position_delta[1]
+        chassis_odom.pose.pose.position.z += base_position_delta[2]
+        chassis_odom.pose.pose.orientation.x = q_odom_base[0]
+        chassis_odom.pose.pose.orientation.y = q_odom_base[1]
+        chassis_odom.pose.pose.orientation.z = q_odom_base[2]
+        chassis_odom.pose.pose.orientation.w = q_odom_base[3]
+        chassis_odom.twist = source.twist
+        chassis_odom.twist.twist.linear.x = linear_in_base[0]
+        chassis_odom.twist.twist.linear.y = linear_in_base[1]
+        chassis_odom.twist.twist.linear.z = linear_in_base[2]
+        chassis_odom.twist.twist.angular.x = angular_in_base[0]
+        chassis_odom.twist.twist.angular.y = angular_in_base[1]
+        chassis_odom.twist.twist.angular.z = angular_in_base[2] + self.gimbal_joint_vel
+
+        self.odom_pub.publish(chassis_odom)
 
     def publish_cv_mode(self) -> None:
         msg = Cvmode()
@@ -169,7 +239,7 @@ class NavFeedbackAdapter(Node):
         self.cv_mode_pub.publish(msg)
 
     def publish_feedback(self) -> None:
-        self.publish_gimbal_odom()
+        self.publish_chassis_odom()
         self.publish_cv_mode()
 
 

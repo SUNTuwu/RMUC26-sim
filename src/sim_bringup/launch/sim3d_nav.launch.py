@@ -3,8 +3,8 @@ import os
 import yaml
 from ament_index_python import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, SetLaunchConfiguration
+from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
@@ -37,6 +37,13 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     map_file = LaunchConfiguration("map_file")
     robot_type = LaunchConfiguration("robot_type")
+    use_lio_rviz = LaunchConfiguration("use_lio_rviz")
+    localization = LaunchConfiguration("localization")
+    segmentation = LaunchConfiguration("segmentation")
+    lio = LaunchConfiguration("lio")
+    launch_sim = LaunchConfiguration("launch_sim")
+    enable_viewer = LaunchConfiguration("enable_viewer")
+    dll_df_output_prefix = LaunchConfiguration("dll_df_output_prefix")
     container_name = LaunchConfiguration("container_name")
     use_nav_rviz = LaunchConfiguration("use_nav_rviz")
     python_prefix = _venv_python_prefix()
@@ -44,6 +51,7 @@ def generate_launch_description():
     sim_bringup_pkg = get_package_share_directory("sim_bringup")
     main_bringup_pkg = get_package_share_directory("main_bringup")
     io_bringup_pkg = get_package_share_directory("io_bringup")
+    state_estimation_bringup_pkg = get_package_share_directory("state_estimation_bringup")
     mapping_bringup_pkg = get_package_share_directory("mapping_bringup")
     nav_bringup_pkg = get_package_share_directory("nav_bringup")
     pointcloud_preprocessor_config = PathJoinSubstitution(
@@ -72,6 +80,41 @@ def generate_launch_description():
         ],
     )
 
+    sim_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([sim_bringup_pkg, "launch", "sim.launch.py"])
+        ),
+        launch_arguments={
+            "use_sim_time": use_sim_time,
+            "enable_viewer": enable_viewer,
+        }.items(),
+        condition=IfCondition(launch_sim),
+    )
+
+    disable_localization = SetLaunchConfiguration(
+        "localization",
+        "none",
+        condition=LaunchConfigurationEquals("map_file", "none"),
+    )
+
+    state_estimation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution(
+                [state_estimation_bringup_pkg, "launch", "state_estimation.launch.py"]
+            )
+        ),
+        launch_arguments={
+            "use_sim_time": use_sim_time,
+            "map_file": map_file,
+            "use_lio_rviz": use_lio_rviz,
+            "localization": localization,
+            "segmentation": segmentation,
+            "lio": lio,
+            "dll_df_output_prefix": dll_df_output_prefix,
+            "robot_type": robot_type,
+        }.items(),
+    )
+
     mapping_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([mapping_bringup_pkg, "launch", "mapping.launch.py"])
@@ -79,7 +122,6 @@ def generate_launch_description():
         launch_arguments={
             "use_sim_time": use_sim_time,
             "prior_map_image_path": prior_map_image_path,
-            # "fixed_frame": "odom",
         }.items(),
     )
 
@@ -93,14 +135,6 @@ def generate_launch_description():
             "robot_type": robot_type,
             "container_name": container_name,
         }.items(),
-    )
-
-    map_to_odom_static_tf = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="map_to_odom_static_tf",
-        output="both",
-        arguments=["0", "0", "0", "0", "0", "0", "map", "odom"],
     )
 
     nav_feedback_adapter = Node(
@@ -135,17 +169,35 @@ def generate_launch_description():
         condition=IfCondition(use_nav_rviz),
     )
 
+    navigation_group = GroupAction(
+        [
+            pointcloud_preprocessor_node,
+            state_estimation_launch,
+            mapping_launch,
+            nav_launch,
+            nav_feedback_adapter,
+            nav_serial_plugin_node,
+        ]
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("use_sim_time", default_value="true"),
+        DeclareLaunchArgument("launch_sim", default_value="true"),
+        DeclareLaunchArgument("enable_viewer", default_value="true"),
         DeclareLaunchArgument("map_file", default_value="none"),
-        DeclareLaunchArgument("robot_type", default_value="26_sentry_tall"),
+        DeclareLaunchArgument("robot_type", default_value="sim_sentry_fold"),
+        DeclareLaunchArgument("use_lio_rviz", default_value="false"),
+        DeclareLaunchArgument("localization", default_value="none"),
+        DeclareLaunchArgument("segmentation", default_value="none"),
+        DeclareLaunchArgument("lio", default_value="pointlio"),
+        DeclareLaunchArgument(
+            "dll_df_output_prefix",
+            default_value="/root/sentry_sim/src/external/RM2026-sentry-ws/src/state_estimation/state_estimation_bringup/DF",
+        ),
         DeclareLaunchArgument("container_name", default_value="sim3d_nav_container"),
         DeclareLaunchArgument("use_nav_rviz", default_value="true"),
-        pointcloud_preprocessor_node,
-        mapping_launch,
-        nav_launch,
-        map_to_odom_static_tf,
-        nav_feedback_adapter,
-        nav_serial_plugin_node,
+        disable_localization,
+        sim_launch,
+        navigation_group,
         nav_rviz,
     ])

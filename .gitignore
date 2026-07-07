@@ -1,14 +1,19 @@
-/build/
-/install/
-/log/
-/docs/
+build/
+install/
+log/
+docs/
+.ros/
+.roslog/
 
 *.dbg
 *.zip
+*.TXT
 
 # Python cache
 __pycache__/
 *.pyc
 
 ANALYSIS/
+slave_board_reference/
+
 .venv/
