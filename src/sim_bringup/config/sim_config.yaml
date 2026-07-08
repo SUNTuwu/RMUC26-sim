@@ -15,12 +15,16 @@ chassis:
 
 sentry_sim_node:
   ros__parameters:
-    robot_init_location: [-10.0,0.0,0.5]
-    left_lidar_ip: 192.168.10.5
-    right_lidar_ip: 192.168.10.3
+    robot_init_location: [-4.0,-4.0,0.5]
+    left_lidar_ip: 192.168.10.4
+    right_lidar_ip: 192.168.10.5
+    mid360_points_per_scan: 24000
     use_keep_stand: false
     chassis_cmd_vel_topic: /cmd_vel_chassis
     cmd_vel_timeout_sec: 0.5
+    chassis_linear_accel_limit: 8.0
+    chassis_angular_accel_limit: 10.0
+    gimbal_angular_accel_limit: 10.0
     tilt_downforce_threshold_deg: 10.0
     tilt_downforce_scale: 300.0
     tilt_downforce_exp_gain: 6.0

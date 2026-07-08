@@ -20,17 +20,64 @@ def _workspace_bringup_file(relative_path):
     return os.path.join(os.getcwd(), "src", "sim_bringup", relative_path)
 
 
+def _workspace_external_file(relative_path):
+    return os.path.join(os.getcwd(), "src", "external", "RM2026-sentry-ws", relative_path)
+
+
+def _first_existing_path(candidates):
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[-1]
+
+
+def _default_robot_type():
+    return os.environ.get("ROBOT_TYPE", "sim_sentry_fold")
+
+
+def _default_robot_xacro_path(robot_type):
+    return _first_existing_path(
+        [
+            _workspace_external_file(os.path.join("src", "main_bringup", "urdf", f"{robot_type}.urdf.xacro")),
+            _workspace_bringup_file(os.path.join("urdf", f"{robot_type}.urdf.xacro")),
+            _workspace_bringup_file(os.path.join("urdf", "sentry.urdf.xacro")),
+        ]
+    )
+
+
+def _default_sim_config_path(robot_type):
+    return _first_existing_path(
+        [
+            _workspace_bringup_file(os.path.join("config", f"sim_config_{robot_type}.yaml")),
+            _workspace_bringup_file(os.path.join("config", "sim_config.yaml")),
+        ]
+    )
+
+
 def generate_launch_description():
-    xacro_path = _workspace_bringup_file(os.path.join('urdf', 'sentry.urdf.xacro'))
-    params_file = _workspace_bringup_file(os.path.join('config', 'sim_config.yaml'))
+    default_robot_type = _default_robot_type()
+    xacro_path = _default_robot_xacro_path(default_robot_type)
+    params_file = _default_sim_config_path(default_robot_type)
     python_prefix = _venv_python_prefix()
+    robot_type = LaunchConfiguration("robot_type")
+    sim_config_file = LaunchConfiguration("sim_config_file")
+    robot_description_xacro_path = LaunchConfiguration("robot_description_xacro_path")
 
     robot_desc = ParameterValue(
-        Command(['xacro ', xacro_path]),
+        Command(['xacro ', robot_description_xacro_path]),
         value_type=str
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "robot_type", default_value=default_robot_type,
+        ),
+        DeclareLaunchArgument(
+            "sim_config_file", default_value=params_file,
+        ),
+        DeclareLaunchArgument(
+            "robot_description_xacro_path", default_value=xacro_path,
+        ),
         DeclareLaunchArgument(
             'use_sim_time', default_value='true',
         ),
@@ -44,7 +91,7 @@ def generate_launch_description():
             name='chassis',
             prefix=python_prefix,
             parameters=[
-                params_file,
+                sim_config_file,
                 {
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                 },
@@ -71,8 +118,9 @@ def generate_launch_description():
             name='sentry_sim_node',
             prefix=python_prefix,
             parameters=[
-                params_file,
+                sim_config_file,
                 {
+                    "robot_description_xacro_path": robot_description_xacro_path,
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'enable_viewer': LaunchConfiguration('enable_viewer'),
                 },

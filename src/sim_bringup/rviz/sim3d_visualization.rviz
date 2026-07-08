@@ -154,7 +154,7 @@ Visualization Manager:
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /livox/lidar_192_168_10_5/pointcloud
+            Value: /livox/lidar_192_168_10_4/pointcloud
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
@@ -187,7 +187,7 @@ Visualization Manager:
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /livox/lidar_192_168_10_4/pointcloud
+            Value: /livox/lidar_192_168_10_5/pointcloud
           Use Fixed Frame: true
           Use rainbow: true
           Value: true

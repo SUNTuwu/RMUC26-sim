@@ -21,6 +21,7 @@
     <origin xyz="0.0 -0.180765 0.0" rpy="0 0 ${-pi / 2}"/>
   </joint>
 
+  <!-- Keep this legacy compatibility link for TF consumers during migration. -->
   <link name="main_gimbal_odom"/>
 
   <joint name="gimbal_link_to_gimbal_odom" type="floating">
