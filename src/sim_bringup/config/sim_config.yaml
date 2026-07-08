@@ -16,9 +16,38 @@ chassis:
 sentry_sim_node:
   ros__parameters:
     robot_init_location: [-4.0,-4.0,0.5]
+
     left_lidar_ip: 192.168.10.4
     right_lidar_ip: 192.168.10.5
-    mid360_points_per_scan: 24000
+    mid360_points_per_scan: 4000
+
+    livox_imu_offset_xyz: [0.011, 0.02329, -0.04412]
+    livox_imu_rpy: [0.0, 0.0, 0.0]
+    gimbal_visual_half_extents_xyz: [0.11, 0.11, 0.04]
+    gimbal_collision_half_extents_xyz: [0.17, 0.17, 0.09]
+    gimbal_body_mass: 0.001
+    gimbal_body_diaginertia_xyz: [0.000001, 0.000001, 0.000001]
+    base_visual_radius: 0.25
+    base_visual_height: 0.14
+    base_collision_radius: 0.25
+    base_collision_height: 0.14
+    base_collision_mass: 20.0
+    livox_visual_radius: 0.035
+    livox_visual_height: 0.05
+    livox_body_mass: 0.265
+    livox_body_diaginertia_xyz: [0.0001, 0.0001, 0.0001]
+    frame_origin_debug_radius: 0.018
+    gimbal_origin_debug_radius: 0.02
+    livox_origin_debug_radius: 0.015
+    imu_origin_debug_radius: 0.01
+    lidar_site_radius: 0.01
+    imu_site_radius: 0.006
+    imu_accel_debug_radius: 0.003
+    imu_accel_debug_scale: 0.12
+    imu_accel_debug_min_length: 0.01
+    boundary_wall_thickness: 0.05
+    boundary_wall_height: 1.2
+    
     use_keep_stand: false
     chassis_cmd_vel_topic: /cmd_vel_chassis
     cmd_vel_timeout_sec: 0.5

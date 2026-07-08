@@ -50,24 +50,6 @@ from mujoco_lidar import MjLidarWrapper
 from mujoco_lidar.scan_gen import LivoxGenerator
 
 
-# ── Robot geometry (from 26_sentry_tall.urdf.xacro) ────────────────────────
-# main_gimbal_link → left_livox_frame:  xyz=(0, 0.180765, 0)
-# main_gimbal_link → right_livox_frame: xyz=(0, -0.180765, 0)
-# main_gimbal_link → base_link:         xyz=(0, 0, -0.34264)
-# LiDAR positions relative to base_link:
-#   left:  (0,  0.180765, 0.34264)
-#   right: (0, -0.180765, 0.34264)
-
-LIDAR_Y_OFFSET = 0.180765
-GIMBAL_Z = 0.34264
-LIDAR_Z_IN_GIMBAL = 0.0
-LIDAR_Z = GIMBAL_Z + LIDAR_Z_IN_GIMBAL
-LEFT_LIDAR_YAW = math.pi / 2.0
-RIGHT_LIDAR_YAW = -math.pi / 2.0
-CHASSIS_DISC_RADIUS = 0.225
-CHASSIS_DISC_HALF_HEIGHT = 0.03
-CHASSIS_DISC_Z = -0.055
-
 # TF frames
 FRAME_BASE_LINK = "base_link"
 FRAME_GIMBAL = "main_gimbal_link"
@@ -76,12 +58,51 @@ FRAME_RIGHT_LIVOX = "right_livox_frame"
 FRAME_GIMBAL_ODOM = "main_gimbal_odom"
 JOINT_GIMBAL_YAW = "gimbal_to_base"
 
+# Default robot structure fallback (matches current 26_sentry_tall URDF).
+DEFAULT_LEFT_LIVOX_POS = (0.0, 0.180765, 0.0)
+DEFAULT_LEFT_LIVOX_RPY = (math.pi, 0.0, math.pi / 2.0)
+DEFAULT_RIGHT_LIVOX_POS = (0.0, -0.180765, 0.0)
+DEFAULT_RIGHT_LIVOX_RPY = (math.pi, 0.0, -math.pi / 2.0)
+DEFAULT_BASE_LINK_POS = (0.0, 0.0, -0.34264)
+DEFAULT_BASE_LINK_RPY = (0.0, 0.0, 0.0)
+DEFAULT_GIMBAL_ODOM_POS = (0.0, 0.0, 0.0)
+DEFAULT_GIMBAL_ODOM_RPY = (0.0, 0.0, 0.0)
+DEFAULT_BASE_JOINT_AXIS = (0.0, 0.0, 1.0)
+
+# Scene geometry defaults. All of these have ROS parameter interfaces.
+DEFAULT_GIMBAL_VISUAL_HALF_EXTENTS_XYZ = (0.11, 0.11, 0.04)
+DEFAULT_GIMBAL_COLLISION_HALF_EXTENTS_XYZ = (0.17, 0.17, 0.09)
+DEFAULT_GIMBAL_BODY_MASS = 1e-3
+DEFAULT_GIMBAL_BODY_DIAGINERTIA_XYZ = (1e-6, 1e-6, 1e-6)
+DEFAULT_BASE_VISUAL_RADIUS = 0.225
+DEFAULT_BASE_VISUAL_HEIGHT = 0.02
+DEFAULT_BASE_COLLISION_RADIUS = 0.225
+DEFAULT_BASE_COLLISION_HEIGHT = 0.06
+DEFAULT_BASE_COLLISION_MASS = 20.0
+DEFAULT_LIVOX_VISUAL_RADIUS = 0.035
+DEFAULT_LIVOX_VISUAL_HEIGHT = 0.05
+DEFAULT_LIVOX_BODY_MASS = 0.265
+DEFAULT_LIVOX_BODY_DIAGINERTIA_XYZ = (0.0001, 0.0001, 0.0001)
+DEFAULT_FRAME_ORIGIN_DEBUG_RADIUS = 0.018
+DEFAULT_GIMBAL_ORIGIN_DEBUG_RADIUS = 0.02
+DEFAULT_LIVOX_ORIGIN_DEBUG_RADIUS = 0.015
+DEFAULT_IMU_ORIGIN_DEBUG_RADIUS = 0.01
+DEFAULT_LIDAR_SITE_RADIUS = 0.01
+DEFAULT_IMU_SITE_RADIUS = 0.006
+DEFAULT_IMU_ACCEL_DEBUG_RADIUS = 0.003
+DEFAULT_IMU_ACCEL_DEBUG_SCALE = 0.12
+DEFAULT_IMU_ACCEL_DEBUG_MIN_LENGTH = 0.002
+DEFAULT_BOUNDARY_WALL_THICKNESS = 0.05
+DEFAULT_BOUNDARY_WALL_HEIGHT = 1.2
+
 # LiDAR params
 LIDAR_CUTOFF = 30.0   # max range (m)
 LIDAR_RATE = 10.0     # Hz
 IMU_RATE = 200.0      # Hz
 LIDAR_SCAN_PERIOD_NS = int(1_000_000_000 / LIDAR_RATE)
 DEFAULT_MID360_POINTS_PER_SCAN = 4032
+DEFAULT_LIVOX_IMU_OFFSET_XYZ = (-0.011, -0.02329, 0.04412)
+DEFAULT_LIVOX_IMU_RPY = (0.0, 0.0, 0.0)
 GRAVITY_M_S2 = 9.81
 IMU_GYRO_STATIC_DEADBAND_RAD_S = 5e-3
 PHYSICS_DT = 0.002    # 500 Hz physics
@@ -225,12 +246,37 @@ def _slew_rate_limit_vector(
     return current + delta / delta_norm * max_delta
 
 
-def _format_xyz(values: tuple[float, float, float]) -> str:
+def _format_values(values: tuple[float, ...]) -> str:
     return " ".join(f"{value:.9g}" for value in values)
+
+
+def _format_xyz(values: tuple[float, float, float]) -> str:
+    return _format_values(values)
 
 
 def _format_quat_wxyz(values: tuple[float, float, float, float]) -> str:
-    return " ".join(f"{value:.9g}" for value in values)
+    return _format_values(values)
+
+
+def _coerce_vector3_param(raw_value, param_name: str) -> tuple[float, float, float]:
+    if not isinstance(raw_value, (list, tuple)) or len(raw_value) != 3:
+        raise ValueError(f"{param_name} must be a 3-element list [x, y, z]")
+    return tuple(float(value) for value in raw_value)
+
+
+def _declare_vector3_param(node: Node, param_name: str, default_value: tuple[float, float, float]) -> tuple[float, float, float]:
+    return _coerce_vector3_param(
+        node.declare_parameter(param_name, list(default_value)).value,
+        param_name,
+    )
+
+
+def _declare_nonnegative_float_param(node: Node, param_name: str, default_value: float) -> float:
+    return max(float(node.declare_parameter(param_name, default_value).value), 0.0)
+
+
+def _identity_quat_wxyz() -> tuple[float, float, float, float]:
+    return (1.0, 0.0, 0.0, 0.0)
 
 
 def _urdf_rpy_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
@@ -250,20 +296,22 @@ def _urdf_rpy_to_quat_wxyz(roll: float, pitch: float, yaw: float) -> tuple[float
     return (qw, qx, qy, qz)
 
 
-def _default_robot_structure() -> dict[str, dict[str, tuple[float, ...]]]:
+def _make_local_pose(pos: tuple[float, float, float], rpy: tuple[float, float, float]) -> dict[str, tuple[float, ...]]:
     return {
-        "left_livox": {
-            "pos": (0.0, LIDAR_Y_OFFSET, LIDAR_Z_IN_GIMBAL),
-            "quat": _urdf_rpy_to_quat_wxyz(0.0, 0.0, LEFT_LIDAR_YAW),
+        "pos": tuple(float(value) for value in pos),
+        "quat": _urdf_rpy_to_quat_wxyz(*rpy),
+    }
+
+
+def _default_robot_structure() -> dict[str, object]:
+    return {
+        "frames": {
+            FRAME_GIMBAL_ODOM: _make_local_pose(DEFAULT_GIMBAL_ODOM_POS, DEFAULT_GIMBAL_ODOM_RPY),
+            FRAME_LEFT_LIVOX: _make_local_pose(DEFAULT_LEFT_LIVOX_POS, DEFAULT_LEFT_LIVOX_RPY),
+            FRAME_RIGHT_LIVOX: _make_local_pose(DEFAULT_RIGHT_LIVOX_POS, DEFAULT_RIGHT_LIVOX_RPY),
+            FRAME_BASE_LINK: _make_local_pose(DEFAULT_BASE_LINK_POS, DEFAULT_BASE_LINK_RPY),
         },
-        "right_livox": {
-            "pos": (0.0, -LIDAR_Y_OFFSET, LIDAR_Z_IN_GIMBAL),
-            "quat": _urdf_rpy_to_quat_wxyz(0.0, 0.0, RIGHT_LIDAR_YAW),
-        },
-        "base_link": {
-            "pos": (0.0, 0.0, -GIMBAL_Z),
-            "quat": _urdf_rpy_to_quat_wxyz(0.0, 0.0, 0.0),
-        },
+        "base_joint_axis": DEFAULT_BASE_JOINT_AXIS,
     }
 
 
@@ -281,6 +329,14 @@ def _parse_origin_xyz_rpy(origin_elem) -> tuple[tuple[float, float, float], tupl
     return xyz, rpy
 
 
+def _parse_axis_xyz(axis_elem) -> tuple[float, float, float]:
+    axis_text = axis_elem.attrib.get("xyz", "0 0 1") if axis_elem is not None else "0 0 1"
+    axis = tuple(float(value) for value in axis_text.split())
+    if len(axis) != 3:
+        raise ValueError(f"Invalid joint axis xyz: {axis_text!r}")
+    return axis
+
+
 def _expand_xacro_to_urdf_xml(xacro_path: str) -> str:
     try:
         xacro_module = importlib.import_module("xacro")
@@ -295,13 +351,14 @@ def _expand_xacro_to_urdf_xml(xacro_path: str) -> str:
         return result.stdout
 
 
-def _find_joint_origin(root: ET.Element, parent_link: str, child_link: str) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+def _find_joint_spec(root: ET.Element, parent_link: str, child_link: str) -> dict[str, object]:
     for joint_elem in root.iter():
         if _xml_local_name(joint_elem.tag) != "joint":
             continue
         parent_elem = None
         child_elem = None
         origin_elem = None
+        axis_elem = None
         for sub_elem in joint_elem:
             sub_name = _xml_local_name(sub_elem.tag)
             if sub_name == "parent":
@@ -310,37 +367,53 @@ def _find_joint_origin(root: ET.Element, parent_link: str, child_link: str) -> t
                 child_elem = sub_elem
             elif sub_name == "origin":
                 origin_elem = sub_elem
+            elif sub_name == "axis":
+                axis_elem = sub_elem
         if parent_elem is None or child_elem is None:
             continue
         if (
             parent_elem.attrib.get("link") == parent_link
             and child_elem.attrib.get("link") == child_link
         ):
-            return _parse_origin_xyz_rpy(origin_elem)
+            xyz, rpy = _parse_origin_xyz_rpy(origin_elem)
+            return {
+                "type": joint_elem.attrib.get("type", "fixed"),
+                "pos": xyz,
+                "quat": _urdf_rpy_to_quat_wxyz(*rpy),
+                "axis": _parse_axis_xyz(axis_elem),
+            }
     raise KeyError(f"Joint origin not found for {parent_link} -> {child_link}")
 
 
-def _load_robot_structure_from_xacro(xacro_path: str) -> dict[str, dict[str, tuple[float, ...]]]:
+def _frame_pose_from_joint_spec(joint_spec: dict[str, object]) -> dict[str, tuple[float, ...]]:
+    return {
+        "pos": tuple(joint_spec["pos"]),
+        "quat": tuple(joint_spec["quat"]),
+    }
+
+
+def _get_frame_pose(robot_structure: dict[str, object], frame_name: str) -> dict[str, tuple[float, ...]]:
+    frames = robot_structure["frames"]
+    return frames[frame_name]
+
+
+def _load_robot_structure_from_xacro(xacro_path: str) -> dict[str, object]:
     urdf_xml = _expand_xacro_to_urdf_xml(xacro_path)
     root = ET.fromstring(urdf_xml)
 
-    left_xyz, left_rpy = _find_joint_origin(root, FRAME_GIMBAL, FRAME_LEFT_LIVOX)
-    right_xyz, right_rpy = _find_joint_origin(root, FRAME_GIMBAL, FRAME_RIGHT_LIVOX)
-    base_xyz, base_rpy = _find_joint_origin(root, FRAME_GIMBAL, FRAME_BASE_LINK)
+    gimbal_odom_joint = _find_joint_spec(root, FRAME_GIMBAL, FRAME_GIMBAL_ODOM)
+    left_joint = _find_joint_spec(root, FRAME_GIMBAL, FRAME_LEFT_LIVOX)
+    right_joint = _find_joint_spec(root, FRAME_GIMBAL, FRAME_RIGHT_LIVOX)
+    base_joint = _find_joint_spec(root, FRAME_GIMBAL, FRAME_BASE_LINK)
 
     return {
-        "left_livox": {
-            "pos": left_xyz,
-            "quat": _urdf_rpy_to_quat_wxyz(*left_rpy),
+        "frames": {
+            FRAME_GIMBAL_ODOM: _frame_pose_from_joint_spec(gimbal_odom_joint),
+            FRAME_LEFT_LIVOX: _frame_pose_from_joint_spec(left_joint),
+            FRAME_RIGHT_LIVOX: _frame_pose_from_joint_spec(right_joint),
+            FRAME_BASE_LINK: _frame_pose_from_joint_spec(base_joint),
         },
-        "right_livox": {
-            "pos": right_xyz,
-            "quat": _urdf_rpy_to_quat_wxyz(*right_rpy),
-        },
-        "base_link": {
-            "pos": base_xyz,
-            "quat": _urdf_rpy_to_quat_wxyz(*base_rpy),
-        },
+        "base_joint_axis": tuple(base_joint["axis"]),
     }
 
 
@@ -417,6 +490,34 @@ def quat_to_rpy(quat) -> tuple[float, float, float]:
     return roll, pitch, yaw
 
 
+def quat_to_rotmat(quat: tuple[float, float, float, float] | np.ndarray) -> np.ndarray:
+    rot_mat = np.zeros(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(rot_mat, np.asarray(quat, dtype=np.float64))
+    return rot_mat.reshape(3, 3)
+
+
+def quat_from_local_z_axis(direction: np.ndarray) -> tuple[float, float, float, float]:
+    z_axis = normalize_vector(np.asarray(direction, dtype=np.float64))
+    if z_axis is None:
+        return _identity_quat_wxyz()
+    x_hint = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    if abs(float(np.dot(x_hint, z_axis))) > 0.9:
+        x_hint = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    x_axis = normalize_vector(x_hint - z_axis * float(np.dot(x_hint, z_axis)))
+    if x_axis is None:
+        return _identity_quat_wxyz()
+    y_axis = normalize_vector(np.cross(z_axis, x_axis))
+    if y_axis is None:
+        return _identity_quat_wxyz()
+    x_axis = normalize_vector(np.cross(y_axis, z_axis))
+    if x_axis is None:
+        return _identity_quat_wxyz()
+    rot_mat = np.column_stack((x_axis, y_axis, z_axis))
+    quat = np.zeros(4, dtype=np.float64)
+    mujoco.mju_mat2Quat(quat, rot_mat.reshape(-1))
+    return tuple(float(value) for value in quat)
+
+
 def rpy_to_quat(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
     cy = math.cos(yaw * 0.5)
     sy = math.sin(yaw * 0.5)
@@ -454,12 +555,40 @@ def make_scene_xml(
     boundary_y_max,
     robot_init_location,
     robot_structure,
+    scene_geometry,
 ):
     """Generate MuJoCo XML with separate render/LiDAR meshes and collision assets."""
     spawn_x, spawn_y, spawn_z = robot_init_location
-    left_livox_pose = robot_structure["left_livox"]
-    right_livox_pose = robot_structure["right_livox"]
-    base_link_pose = robot_structure["base_link"]
+    gimbal_odom_pose = _get_frame_pose(robot_structure, FRAME_GIMBAL_ODOM)
+    left_livox_pose = _get_frame_pose(robot_structure, FRAME_LEFT_LIVOX)
+    right_livox_pose = _get_frame_pose(robot_structure, FRAME_RIGHT_LIVOX)
+    base_link_pose = _get_frame_pose(robot_structure, FRAME_BASE_LINK)
+    base_joint_axis = tuple(robot_structure["base_joint_axis"])
+    gimbal_visual_half_extents_xyz = scene_geometry["gimbal_visual_half_extents_xyz"]
+    gimbal_collision_half_extents_xyz = scene_geometry["gimbal_collision_half_extents_xyz"]
+    gimbal_body_mass = scene_geometry["gimbal_body_mass"]
+    gimbal_body_diaginertia_xyz = scene_geometry["gimbal_body_diaginertia_xyz"]
+    base_visual_radius = scene_geometry["base_visual_radius"]
+    base_visual_half_height = scene_geometry["base_visual_height"] / 2.0
+    base_collision_radius = scene_geometry["base_collision_radius"]
+    base_collision_half_height = scene_geometry["base_collision_height"] / 2.0
+    base_collision_mass = scene_geometry["base_collision_mass"]
+    livox_visual_radius = scene_geometry["livox_visual_radius"]
+    livox_visual_half_height = scene_geometry["livox_visual_height"]/2.0
+    livox_body_mass = scene_geometry["livox_body_mass"]
+    livox_body_diaginertia_xyz = scene_geometry["livox_body_diaginertia_xyz"]
+    frame_origin_debug_radius = scene_geometry["frame_origin_debug_radius"]
+    gimbal_origin_debug_radius = scene_geometry["gimbal_origin_debug_radius"]
+    livox_origin_debug_radius = scene_geometry["livox_origin_debug_radius"]
+    imu_origin_debug_radius = scene_geometry["imu_origin_debug_radius"]
+    lidar_site_radius = scene_geometry["lidar_site_radius"]
+    imu_site_radius = scene_geometry["imu_site_radius"]
+    imu_accel_debug_radius = scene_geometry["imu_accel_debug_radius"]
+    imu_accel_debug_min_length = scene_geometry["imu_accel_debug_min_length"]
+    boundary_wall_thickness = scene_geometry["boundary_wall_thickness"]
+    boundary_wall_half_height = scene_geometry["boundary_wall_height"] / 2.0
+    livox_imu_offset_xyz = scene_geometry["livox_imu_offset_xyz"]
+    livox_imu_quat = scene_geometry["livox_imu_quat"]
     view_scene_mesh_rel = "mesh_view/mesh_view.obj"
     lidar_scene_mesh_rel = "mesh_lidar/mesh_lidar.obj"
     collision_dir = os.path.join(meshdir, "mesh_collision_env")
@@ -490,21 +619,27 @@ def make_scene_xml(
         f'condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>'
         for i, _ in enumerate(collision_mesh_files)
     )
+    boundary_half_span_y = 0.5 * (boundary_y_max - boundary_y_min)
+    boundary_half_span_x = 0.5 * (boundary_x_max - boundary_x_min)
     boundary_geom_xml = f"""
-      <geom name="boundary_wall_pos_x" type="box" pos="{boundary_x_max + 0.05} 0 0.6"
-            size="0.05 {0.5 * (boundary_y_max - boundary_y_min)} 0.6"
+      <geom name="boundary_wall_pos_x" type="box"
+            pos="{boundary_x_max + boundary_wall_thickness} 0 {boundary_wall_half_height}"
+            size="{boundary_wall_thickness} {boundary_half_span_y} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
             condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
-      <geom name="boundary_wall_neg_x" type="box" pos="{boundary_x_min - 0.05} 0 0.6"
-            size="0.05 {0.5 * (boundary_y_max - boundary_y_min)} 0.6"
+      <geom name="boundary_wall_neg_x" type="box"
+            pos="{boundary_x_min - boundary_wall_thickness} 0 {boundary_wall_half_height}"
+            size="{boundary_wall_thickness} {boundary_half_span_y} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
             condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
-      <geom name="boundary_wall_pos_y" type="box" pos="0 {boundary_y_max + 0.05} 0.6"
-            size="{0.5 * (boundary_x_max - boundary_x_min)} 0.05 0.6"
+      <geom name="boundary_wall_pos_y" type="box"
+            pos="0 {boundary_y_max + boundary_wall_thickness} {boundary_wall_half_height}"
+            size="{boundary_half_span_x} {boundary_wall_thickness} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
             condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
-      <geom name="boundary_wall_neg_y" type="box" pos="0 {boundary_y_min - 0.05} 0.6"
-            size="{0.5 * (boundary_x_max - boundary_x_min)} 0.05 0.6"
+      <geom name="boundary_wall_neg_y" type="box"
+            pos="0 {boundary_y_min - boundary_wall_thickness} {boundary_wall_half_height}"
+            size="{boundary_half_span_x} {boundary_wall_thickness} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
             condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>"""
 
@@ -528,7 +663,8 @@ def make_scene_xml(
     <material name="mat_arena" rgba="0.5 0.5 0.6 1.0"/>
     <material name="mat_lidar_debug" rgba="0.0 0.8 1.0 0.35"/>
     <material name="mat_collision_debug" rgba="1.0 0.55 0.1 0.28"/>
-    <material name="mat_frame_origin_debug" rgba="0.2 1.0 0.2 1.0"/>
+    <material name="mat_frame_origin_debug" rgba="1.0 0.0 1.0 1.0"/>
+    <material name="mat_imu_origin_debug" rgba="1.0 1.0 0.0 1.0"/>
 
     <mesh name="arena_view_mesh" file="{view_scene_mesh_rel}"/>
     <mesh name="lidar_detect_mesh" file="{lidar_scene_mesh_rel}"/>
@@ -557,86 +693,117 @@ def make_scene_xml(
 {collision_geom_xml}
 {boundary_geom_xml}
     </body>
+      <body name="left_imu_accel_debug_body" mocap="true" pos="0 0 0" quat="1 0 0 0">
+        <geom name="left_imu_accel_debug" type="cylinder"
+              size="{_format_values((imu_accel_debug_radius, imu_accel_debug_min_length / 2.0))}"
+              material="mat_imu_origin_debug" mass="0"
+              contype="0" conaffinity="0" group="1"/>
+      </body>
+      <body name="right_imu_accel_debug_body" mocap="true" pos="0 0 0" quat="1 0 0 0">
+        <geom name="right_imu_accel_debug" type="cylinder"
+              size="{_format_values((imu_accel_debug_radius, imu_accel_debug_min_length / 2.0))}"
+              material="mat_imu_origin_debug" mass="0"
+              contype="0" conaffinity="0" group="1"/>
+      </body>
 
     <!-- ===== main_gimbal_link (top-level dynamic body) ===== -->
     <body name="{FRAME_GIMBAL}" pos="{spawn_x} {spawn_y} {spawn_z}">
       <freejoint name="gimbal_freejoint"/>
-      <geom name="main_gimbal_link_origin_debug" type="sphere" size="0.02"
+      <inertial pos="0 0 0" mass="{gimbal_body_mass}"
+                diaginertia="{_format_xyz(gimbal_body_diaginertia_xyz)}"/>
+      <geom name="main_gimbal_link_origin_debug" type="sphere"
+            size="{gimbal_origin_debug_radius}"
             material="mat_frame_origin_debug" mass="0"
             contype="0" conaffinity="0" group="1"/>
 
-      <geom name="gimbal_geom" type="box" size="0.11 0.11 0.04"
+      <geom name="gimbal_geom" type="box"
+            size="{_format_xyz(gimbal_visual_half_extents_xyz)}"
+            pos="0 0 {-gimbal_visual_half_extents_xyz[2]:.9g}"
             material="mat_gimbal" mass="0"
             contype="0" conaffinity="0" group="1"/>
-      <!-- Two slim boxes form a backward-pointing triangular marker. -->
-      <geom name="gimbal_pointer_left" type="box" size="0.055 0.012 0.04"
-            pos="-0.13 0.03 0" euler="0 0 2.54159265"
-            material="mat_gimbal_arrow" rgba="0.9 0.1 0.1 1.0"
-            mass="0" contype="0" conaffinity="0" group="1"/>
-      <geom name="gimbal_pointer_right" type="box" size="0.055 0.012 0.04"
-            pos="-0.13 -0.03 0" euler="0 0 -2.54159265"
-            material="mat_gimbal_arrow" rgba="0.9 0.1 0.1 1.0"
-            mass="0" contype="0" conaffinity="0" group="1"/>
-      <geom name="gimbal_collision" type="box" size="0.17 0.17 0.09"
+      <geom name="gimbal_collision" type="box"
+            size="{_format_xyz(gimbal_collision_half_extents_xyz)}"
+            pos="0 0 {-gimbal_collision_half_extents_xyz[2]:.9g}"
             rgba="0 0 0 0" mass="0"
             contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
             friction="0 0 0" group="1"/>
 
       <!-- ===== main_gimbal_odom (legacy compatibility TF placeholder) ===== -->
-      <body name="{FRAME_GIMBAL_ODOM}" pos="0 0 0">
-        <geom name="gimbal_odom_geom" type="sphere" size="0.001"
-              rgba="0 0 0 0" mass="0" contype="0" conaffinity="0" group="1"/>
-        <geom name="main_gimbal_odom_origin_debug" type="sphere" size="0.018"
-              rgba="1.0 1.0 0.0 1.0" mass="0"
+      <body name="{FRAME_GIMBAL_ODOM}" pos="{_format_xyz(gimbal_odom_pose['pos'])}"
+            quat="{_format_quat_wxyz(gimbal_odom_pose['quat'])}">
+        <geom name="main_gimbal_odom_origin_debug" type="sphere"
+              size="{frame_origin_debug_radius}"
+              material="mat_frame_origin_debug" mass="0"
               contype="0" conaffinity="0" group="1"/>
       </body>
 
-      <!-- ===== left_livox_frame =====
-           Match the LiDAR body orientation to the URDF joint so the traced rays
-           and the published frame use the same local axes. -->
+      <!-- ===== left_livox_frame ===== -->
       <body name="{FRAME_LEFT_LIVOX}" pos="{_format_xyz(left_livox_pose['pos'])}"
             quat="{_format_quat_wxyz(left_livox_pose['quat'])}">
-        <geom name="left_livox_origin_debug" type="sphere" size="0.015"
-              rgba="1.0 0.0 0.0 1.0" mass="0"
+        <geom name="left_livox_origin_debug" type="sphere"
+              size="{livox_origin_debug_radius}"
+              material="mat_frame_origin_debug" mass="0"
               contype="0" conaffinity="0" group="1"/>
-        <geom name="left_lidar_vis" type="cylinder" size="0.035 0.025"
-              material="mat_lidar" mass="0.265"
+        <geom name="left_lidar_vis" type="cylinder"
+              size="{_format_values((livox_visual_radius, livox_visual_half_height))}"
+              material="mat_lidar" mass="0"
               contype="0" conaffinity="0" group="1"/>
-        <inertial pos="0 0 0" mass="0.265" diaginertia="0.0001 0.0001 0.0001"/>
+        <inertial pos="0 0 0" mass="{livox_body_mass}"
+                  diaginertia="{_format_xyz(livox_body_diaginertia_xyz)}"/>
 
-        <!-- LiDAR ray-casting site (identity orientation, rays in +x hemisphere) -->
-        <site name="left_lidar_site" type="sphere" size="0.01" rgba="1 0 0 0.5"/>
+        <geom name="left_imu_origin_debug" pos="{_format_xyz(livox_imu_offset_xyz)}"
+              type="sphere" size="{imu_origin_debug_radius}"
+              material="mat_imu_origin_debug" mass="0"
+              contype="0" conaffinity="0" group="1"/>
+        <site name="left_lidar_site" type="sphere" size="{lidar_site_radius}" rgba="1 0 1 0.5"/>
+        <site name="left_imu_site" pos="{_format_xyz(livox_imu_offset_xyz)}"
+              quat="{_format_quat_wxyz(livox_imu_quat)}"
+              type="sphere" size="{imu_site_radius}" rgba="1 1 0 0.6"/>
       </body>
 
       <!-- ===== right_livox_frame ===== -->
       <body name="{FRAME_RIGHT_LIVOX}" pos="{_format_xyz(right_livox_pose['pos'])}"
             quat="{_format_quat_wxyz(right_livox_pose['quat'])}">
-        <geom name="right_livox_origin_debug" type="sphere" size="0.015"
-              rgba="0.0 0.0 1.0 1.0" mass="0"
+        <geom name="right_livox_origin_debug" type="sphere"
+              size="{livox_origin_debug_radius}"
+              material="mat_frame_origin_debug" mass="0"
               contype="0" conaffinity="0" group="1"/>
-        <geom name="right_lidar_vis" type="cylinder" size="0.035 0.025"
-              material="mat_lidar" mass="0.265"
+        <geom name="right_lidar_vis" type="cylinder"
+              size="{_format_values((livox_visual_radius, livox_visual_half_height))}"
+              material="mat_lidar" mass="0"
               contype="0" conaffinity="0" group="1"/>
-        <inertial pos="0 0 0" mass="0.265" diaginertia="0.0001 0.0001 0.0001"/>
+        <inertial pos="0 0 0" mass="{livox_body_mass}"
+                  diaginertia="{_format_xyz(livox_body_diaginertia_xyz)}"/>
 
-        <!-- LiDAR ray-casting site -->
-        <site name="right_lidar_site" type="sphere" size="0.01" rgba="1 0 0 0.5"/>
+        <geom name="right_imu_origin_debug" pos="{_format_xyz(livox_imu_offset_xyz)}"
+              type="sphere" size="{imu_origin_debug_radius}"
+              material="mat_imu_origin_debug" mass="0"
+              contype="0" conaffinity="0" group="1"/>
+        <site name="right_lidar_site" type="sphere" size="{lidar_site_radius}" rgba="1 0 1 0.5"/>
+        <site name="right_imu_site" pos="{_format_xyz(livox_imu_offset_xyz)}"
+              quat="{_format_quat_wxyz(livox_imu_quat)}"
+              type="sphere" size="{imu_site_radius}" rgba="1 1 0 0.6"/>
       </body>
 
       <!-- ===== base_link ===== -->
       <body name="{FRAME_BASE_LINK}" pos="{_format_xyz(base_link_pose['pos'])}"
             quat="{_format_quat_wxyz(base_link_pose['quat'])}">
-        <joint name="{JOINT_GIMBAL_YAW}" type="hinge" axis="0 0 1" damping="0"/>
-        <geom name="base_link_origin_debug" type="sphere" size="0.018"
-              rgba="1.0 0.0 1.0 1.0" mass="0"
+        <joint name="{JOINT_GIMBAL_YAW}" type="hinge"
+               axis="{_format_xyz(base_joint_axis)}" damping="0"/>
+        <geom name="base_link_origin_debug" type="sphere"
+              size="{frame_origin_debug_radius}"
+              material="mat_frame_origin_debug" mass="0"
               contype="0" conaffinity="0" group="1"/>
-        <geom name="chassis" type="box" size="0.225 0.225 0.01"
+        <geom name="chassis_visual" type="cylinder"
+              size="{_format_values((base_visual_radius, base_visual_half_height))}"
+              pos="0 0 {base_visual_half_height:.9g}"
               material="mat_chassis" mass="0"
               contype="0" conaffinity="0" condim="3"
               friction="0 0 0" group="1"/>
         <geom name="chassis_contact_base" type="cylinder"
-              size="{CHASSIS_DISC_RADIUS} {CHASSIS_DISC_HALF_HEIGHT}"
-              pos="0 0 {CHASSIS_DISC_Z}" material="mat_chassis" mass="20.0"
+              size="{_format_values((base_collision_radius, base_collision_half_height))}"
+              pos="0 0 {base_collision_half_height:.9g}"
+              material="mat_chassis" mass="{base_collision_mass}"
               contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
               friction="0 0 0" group="1"/>
       </body>
@@ -645,16 +812,154 @@ def make_scene_xml(
 
   <sensor>
     <!-- IMU sensors (accelerometer + gyro in body frame) -->
-    <accelerometer name="left_imu_acc" site="left_lidar_site"/>
-    <gyro name="left_imu_gyro" site="left_lidar_site"/>
-    <accelerometer name="right_imu_acc" site="right_lidar_site"/>
-    <gyro name="right_imu_gyro" site="right_lidar_site"/>
+    <accelerometer name="left_imu_acc" site="left_imu_site"/>
+    <gyro name="left_imu_gyro" site="left_imu_site"/>
+    <accelerometer name="right_imu_acc" site="right_imu_site"/>
+    <gyro name="right_imu_gyro" site="right_imu_site"/>
 
     <!-- Base pose for debugging -->
     <framepos name="base_pos" objtype="body" objname="{FRAME_BASE_LINK}"/>
     <framequat name="base_quat" objtype="body" objname="{FRAME_BASE_LINK}"/>
   </sensor>
 </mujoco>"""
+
+
+def _load_scene_geometry_params(node: Node) -> dict[str, object]:
+    livox_imu_offset_xyz = _declare_vector3_param(
+        node,
+        "livox_imu_offset_xyz",
+        DEFAULT_LIVOX_IMU_OFFSET_XYZ,
+    )
+    livox_imu_rpy = _declare_vector3_param(
+        node,
+        "livox_imu_rpy",
+        DEFAULT_LIVOX_IMU_RPY,
+    )
+    return {
+        "gimbal_visual_half_extents_xyz": _declare_vector3_param(
+            node,
+            "gimbal_visual_half_extents_xyz",
+            DEFAULT_GIMBAL_VISUAL_HALF_EXTENTS_XYZ,
+        ),
+        "gimbal_collision_half_extents_xyz": _declare_vector3_param(
+            node,
+            "gimbal_collision_half_extents_xyz",
+            DEFAULT_GIMBAL_COLLISION_HALF_EXTENTS_XYZ,
+        ),
+        "gimbal_body_mass": _declare_nonnegative_float_param(
+            node,
+            "gimbal_body_mass",
+            DEFAULT_GIMBAL_BODY_MASS,
+        ),
+        "gimbal_body_diaginertia_xyz": _declare_vector3_param(
+            node,
+            "gimbal_body_diaginertia_xyz",
+            DEFAULT_GIMBAL_BODY_DIAGINERTIA_XYZ,
+        ),
+        "base_visual_radius": _declare_nonnegative_float_param(
+            node,
+            "base_visual_radius",
+            DEFAULT_BASE_VISUAL_RADIUS,
+        ),
+        "base_visual_height": _declare_nonnegative_float_param(
+            node,
+            "base_visual_height",
+            DEFAULT_BASE_VISUAL_HEIGHT,
+        ),
+        "base_collision_radius": _declare_nonnegative_float_param(
+            node,
+            "base_collision_radius",
+            DEFAULT_BASE_COLLISION_RADIUS,
+        ),
+        "base_collision_height": _declare_nonnegative_float_param(
+            node,
+            "base_collision_height",
+            DEFAULT_BASE_COLLISION_HEIGHT,
+        ),
+        "base_collision_mass": _declare_nonnegative_float_param(
+            node,
+            "base_collision_mass",
+            DEFAULT_BASE_COLLISION_MASS,
+        ),
+        "livox_visual_radius": _declare_nonnegative_float_param(
+            node,
+            "livox_visual_radius",
+            DEFAULT_LIVOX_VISUAL_RADIUS,
+        ),
+        "livox_visual_height": _declare_nonnegative_float_param(
+            node,
+            "livox_visual_height",
+            DEFAULT_LIVOX_VISUAL_HEIGHT,
+        ),
+        "livox_body_mass": _declare_nonnegative_float_param(
+            node,
+            "livox_body_mass",
+            DEFAULT_LIVOX_BODY_MASS,
+        ),
+        "livox_body_diaginertia_xyz": _declare_vector3_param(
+            node,
+            "livox_body_diaginertia_xyz",
+            DEFAULT_LIVOX_BODY_DIAGINERTIA_XYZ,
+        ),
+        "frame_origin_debug_radius": _declare_nonnegative_float_param(
+            node,
+            "frame_origin_debug_radius",
+            DEFAULT_FRAME_ORIGIN_DEBUG_RADIUS,
+        ),
+        "gimbal_origin_debug_radius": _declare_nonnegative_float_param(
+            node,
+            "gimbal_origin_debug_radius",
+            DEFAULT_GIMBAL_ORIGIN_DEBUG_RADIUS,
+        ),
+        "livox_origin_debug_radius": _declare_nonnegative_float_param(
+            node,
+            "livox_origin_debug_radius",
+            DEFAULT_LIVOX_ORIGIN_DEBUG_RADIUS,
+        ),
+        "imu_origin_debug_radius": _declare_nonnegative_float_param(
+            node,
+            "imu_origin_debug_radius",
+            DEFAULT_IMU_ORIGIN_DEBUG_RADIUS,
+        ),
+        "lidar_site_radius": _declare_nonnegative_float_param(
+            node,
+            "lidar_site_radius",
+            DEFAULT_LIDAR_SITE_RADIUS,
+        ),
+        "imu_site_radius": _declare_nonnegative_float_param(
+            node,
+            "imu_site_radius",
+            DEFAULT_IMU_SITE_RADIUS,
+        ),
+        "imu_accel_debug_radius": _declare_nonnegative_float_param(
+            node,
+            "imu_accel_debug_radius",
+            DEFAULT_IMU_ACCEL_DEBUG_RADIUS,
+        ),
+        "imu_accel_debug_scale": _declare_nonnegative_float_param(
+            node,
+            "imu_accel_debug_scale",
+            DEFAULT_IMU_ACCEL_DEBUG_SCALE,
+        ),
+        "imu_accel_debug_min_length": _declare_nonnegative_float_param(
+            node,
+            "imu_accel_debug_min_length",
+            DEFAULT_IMU_ACCEL_DEBUG_MIN_LENGTH,
+        ),
+        "boundary_wall_thickness": _declare_nonnegative_float_param(
+            node,
+            "boundary_wall_thickness",
+            DEFAULT_BOUNDARY_WALL_THICKNESS,
+        ),
+        "boundary_wall_height": _declare_nonnegative_float_param(
+            node,
+            "boundary_wall_height",
+            DEFAULT_BOUNDARY_WALL_HEIGHT,
+        ),
+        "livox_imu_offset_xyz": livox_imu_offset_xyz,
+        "livox_imu_rpy": livox_imu_rpy,
+        "livox_imu_quat": _urdf_rpy_to_quat_wxyz(*livox_imu_rpy),
+    }
 
 
 class SentrySimNode(Node):
@@ -746,6 +1051,15 @@ class SentrySimNode(Node):
             ),
             1,
         )
+        self.scene_geometry = _load_scene_geometry_params(self)
+        self.livox_imu_offset_xyz = tuple(self.scene_geometry["livox_imu_offset_xyz"])
+        self.livox_imu_rpy = tuple(self.scene_geometry["livox_imu_rpy"])
+        self.livox_imu_quat = tuple(self.scene_geometry["livox_imu_quat"])
+        self.imu_accel_debug_scale = float(self.scene_geometry["imu_accel_debug_scale"])
+        self.imu_accel_debug_min_length = float(
+            self.scene_geometry["imu_accel_debug_min_length"]
+        )
+        self.imu_accel_debug_radius = float(self.scene_geometry["imu_accel_debug_radius"])
         self.robot_description_xacro_path = str(
             self.declare_parameter("robot_description_xacro_path", "").value
         ).strip()
@@ -753,9 +1067,10 @@ class SentrySimNode(Node):
             "robot_init_location",
             list(DEFAULT_ROBOT_INIT_LOCATION),
         ).value
-        if not isinstance(raw_robot_init_location, (list, tuple)) or len(raw_robot_init_location) != 3:
-            raise ValueError("robot_init_location must be a 3-element list [x, y, z]")
-        self.robot_init_location = tuple(float(value) for value in raw_robot_init_location)
+        self.robot_init_location = _coerce_vector3_param(
+            raw_robot_init_location,
+            "robot_init_location",
+        )
         self.left_lidar_ip = str(
             self.declare_parameter("left_lidar_ip", "192.168.10.4").value
         )
@@ -829,6 +1144,7 @@ class SentrySimNode(Node):
                 self.boundary_y_max,
                 self.robot_init_location,
                 self.robot_structure,
+                self.scene_geometry,
             )
         )
         self.data = mujoco.MjData(self.model)
@@ -849,6 +1165,50 @@ class SentrySimNode(Node):
         )
         if self.base_body_id < 0:
             raise RuntimeError(f"MuJoCo body not found: {FRAME_BASE_LINK}")
+        self.left_imu_accel_geom_id = int(
+            mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                "left_imu_accel_debug",
+            )
+        )
+        self.right_imu_accel_geom_id = int(
+            mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_GEOM,
+                "right_imu_accel_debug",
+            )
+        )
+        if self.left_imu_accel_geom_id < 0 or self.right_imu_accel_geom_id < 0:
+            raise RuntimeError("MuJoCo IMU accel debug geom not found")
+        self.left_imu_site_id = int(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "left_imu_site")
+        )
+        self.right_imu_site_id = int(
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "right_imu_site")
+        )
+        if self.left_imu_site_id < 0 or self.right_imu_site_id < 0:
+            raise RuntimeError("MuJoCo IMU site not found")
+        self.left_imu_accel_body_id = int(
+            mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_BODY,
+                "left_imu_accel_debug_body",
+            )
+        )
+        self.right_imu_accel_body_id = int(
+            mujoco.mj_name2id(
+                self.model,
+                mujoco.mjtObj.mjOBJ_BODY,
+                "right_imu_accel_debug_body",
+            )
+        )
+        if self.left_imu_accel_body_id < 0 or self.right_imu_accel_body_id < 0:
+            raise RuntimeError("MuJoCo IMU accel debug body not found")
+        self.left_imu_accel_mocap_id = int(self.model.body_mocapid[self.left_imu_accel_body_id])
+        self.right_imu_accel_mocap_id = int(self.model.body_mocapid[self.right_imu_accel_body_id])
+        if self.left_imu_accel_mocap_id < 0 or self.right_imu_accel_mocap_id < 0:
+            raise RuntimeError("MuJoCo IMU accel debug mocap id not found")
         mujoco.mj_forward(self.model, self.data)
         self.keep_stand_geomgroup = np.zeros(6, dtype=np.uint8)
         self.keep_stand_geomgroup[COLLISION_GEOM_GROUP] = 1
@@ -1332,6 +1692,21 @@ class SentrySimNode(Node):
                 )
                 self.gimbal_joint_pos = float(self.data.qpos[self.gimbal_qpos_adr])
                 self.gimbal_joint_vel = float(self.data.qvel[self.gimbal_dof_adr])
+                left_acc, _ = self._read_imu_sensor("left_imu_acc", "left_imu_gyro")
+                right_acc, _ = self._read_imu_sensor("right_imu_acc", "right_imu_gyro")
+                self._update_imu_accel_debug_geom(
+                    self.left_imu_accel_geom_id,
+                    self.left_imu_accel_mocap_id,
+                    self.left_imu_site_id,
+                    left_acc / GRAVITY_M_S2,
+                )
+                self._update_imu_accel_debug_geom(
+                    self.right_imu_accel_geom_id,
+                    self.right_imu_accel_mocap_id,
+                    self.right_imu_site_id,
+                    right_acc / GRAVITY_M_S2,
+                )
+                mujoco.mj_forward(self.model, self.data)
                 pos = self.data.qpos[0:3]
                 quat = self.data.qpos[3:7]
                 gimbal_yaw = math.atan2(
@@ -1493,6 +1868,39 @@ class SentrySimNode(Node):
             gyro = np.zeros(3)
 
         return acc, gyro
+
+    def _update_imu_accel_debug_geom(
+        self,
+        geom_id: int,
+        mocap_id: int,
+        site_id: int,
+        acc_in_g: np.ndarray,
+    ) -> None:
+        accel_xy_imu = np.array(
+            [float(acc_in_g[0]), float(acc_in_g[1]), 0.0],
+            dtype=np.float64,
+        )
+        accel_xy_norm = float(np.linalg.norm(accel_xy_imu))
+        geom_length = accel_xy_norm * self.imu_accel_debug_scale
+        if accel_xy_norm <= 1e-9 or geom_length <= self.imu_accel_debug_min_length:
+            direction_imu = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            geom_length = self.imu_accel_debug_min_length
+        else:
+            direction_imu = accel_xy_imu / accel_xy_norm
+        site_rot = self.data.site_xmat[site_id].reshape(3, 3).copy()
+        direction_world = site_rot @ direction_imu
+        direction_unit = normalize_vector(direction_world)
+        if direction_unit is None:
+            direction_unit = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        geom_half_height = max(geom_length * 0.5, self.imu_accel_debug_min_length * 0.5)
+        geom_center = self.data.site_xpos[site_id].copy() + direction_unit * geom_half_height
+        self.data.mocap_pos[mocap_id, :] = geom_center
+        self.data.mocap_quat[mocap_id, :] = np.asarray(
+            quat_from_local_z_axis(direction_unit),
+            dtype=np.float64,
+        )
+        self.model.geom_size[geom_id, 0] = self.imu_accel_debug_radius
+        self.model.geom_size[geom_id, 1] = geom_half_height
 
     def _build_imu_message(self, stamp, frame_id: str, acc: np.ndarray, gyro: np.ndarray) -> sensor_msgs.msg.Imu:
         msg = sensor_msgs.msg.Imu()
