@@ -43,7 +43,13 @@ import std_msgs.msg
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 
 from livox_ros_driver2.msg import CustomMsg, CustomPoint
-from sim_core.livox_bridge import ranges_to_custom_msg, ranges_to_pointcloud2_msg
+from sim_core.livox_bridge import (
+    DEFAULT_POINT_OFFSET_STEP_NS,
+    DEFAULT_REFLECTIVITY_DECAY_METERS,
+    DEFAULT_REFLECTIVITY_MAX,
+    ranges_to_custom_msg,
+    ranges_to_pointcloud2_msg,
+)
 
 import mujoco
 from mujoco_lidar import MjLidarWrapper
@@ -1051,6 +1057,33 @@ class SentrySimNode(Node):
             ),
             1,
         )
+        self.livox_point_offset_step_ns = max(
+            int(
+                self.declare_parameter(
+                    "livox_point_offset_step_ns",
+                    DEFAULT_POINT_OFFSET_STEP_NS,
+                ).value
+            ),
+            0,
+        )
+        self.livox_reflectivity_max = max(
+            float(
+                self.declare_parameter(
+                    "livox_reflectivity_max",
+                    DEFAULT_REFLECTIVITY_MAX,
+                ).value
+            ),
+            0.0,
+        )
+        self.livox_reflectivity_decay_meters = max(
+            float(
+                self.declare_parameter(
+                    "livox_reflectivity_decay_meters",
+                    DEFAULT_REFLECTIVITY_DECAY_METERS,
+                ).value
+            ),
+            1e-6,
+        )
         self.scene_geometry = _load_scene_geometry_params(self)
         self.livox_imu_offset_xyz = tuple(self.scene_geometry["livox_imu_offset_xyz"])
         self.livox_imu_rpy = tuple(self.scene_geometry["livox_imu_rpy"])
@@ -1778,11 +1811,17 @@ class SentrySimNode(Node):
             ranges_left, ray_dirs, ray_phi,
             FRAME_LEFT_LIVOX, stamp, lidar_id=5,
             points_local=points_left_local,
+            point_offset_step_ns=self.livox_point_offset_step_ns,
+            reflectivity_max=self.livox_reflectivity_max,
+            reflectivity_decay_meters=self.livox_reflectivity_decay_meters,
         )
         msg_right = ranges_to_custom_msg(
             ranges_right, ray_dirs, ray_phi,
             FRAME_RIGHT_LIVOX, stamp, lidar_id=3,
             points_local=points_right_local,
+            point_offset_step_ns=self.livox_point_offset_step_ns,
+            reflectivity_max=self.livox_reflectivity_max,
+            reflectivity_decay_meters=self.livox_reflectivity_decay_meters,
         )
         pc2_left = self._ranges_to_pointcloud(
             ranges_left,
@@ -1851,6 +1890,9 @@ class SentrySimNode(Node):
             frame_id,
             stamp,
             points_local=points_local,
+            point_offset_step_ns=self.livox_point_offset_step_ns,
+            reflectivity_max=self.livox_reflectivity_max,
+            reflectivity_decay_meters=self.livox_reflectivity_decay_meters,
         )
 
     # ── IMU callback ──

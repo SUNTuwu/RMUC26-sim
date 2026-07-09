@@ -20,9 +20,9 @@ except ImportError:
 
 MID360_SCAN_LINES = 4
 LIVOX_TAG = 0x00
-POINT_OFFSET_STEP_NS = 5_000
-REFLECTIVITY_MAX = 40.0
-REFLECTIVITY_DECAY_METERS = 2.0
+DEFAULT_POINT_OFFSET_STEP_NS = 5_000
+DEFAULT_REFLECTIVITY_MAX = 40.0
+DEFAULT_REFLECTIVITY_DECAY_METERS = 2.0
 
 
 def _stamp_to_ns(stamp) -> int:
@@ -53,20 +53,26 @@ def _compute_line_indices(ray_phi: np.ndarray) -> np.ndarray:
     return np.argmin(distance_to_line, axis=1).astype(np.uint8)
 
 
-def _compute_offset_times(num_points: int) -> np.ndarray:
+def _compute_offset_times(num_points: int, point_offset_step_ns: int) -> np.ndarray:
     if num_points <= 0:
         return np.zeros(num_points, dtype=np.uint32)
 
     # 对齐当前核查目标：相邻两点 offset_time 固定差 5000ns。
-    point_offsets = np.arange(num_points, dtype=np.uint64) * np.uint64(POINT_OFFSET_STEP_NS)
+    point_offsets = np.arange(num_points, dtype=np.uint64) * np.uint64(
+        max(int(point_offset_step_ns), 0)
+    )
     return np.minimum(point_offsets, np.uint64(np.iinfo(np.uint32).max)).astype(np.uint32)
 
 
-def _synthesize_reflectivity(ranges: np.ndarray) -> np.ndarray:
+def _synthesize_reflectivity(
+    ranges: np.ndarray,
+    reflectivity_max: float,
+    reflectivity_decay_meters: float,
+) -> np.ndarray:
     # MuJoCo 没有真实反射率，这里只生成一个低两位数的距离衰减代理值，
     # 让数值量级更接近当前实机录包。
-    reflectivity = REFLECTIVITY_MAX * np.exp(
-        -np.maximum(ranges, 0.0) / REFLECTIVITY_DECAY_METERS
+    reflectivity = max(float(reflectivity_max), 0.0) * np.exp(
+        -np.maximum(ranges, 0.0) / max(float(reflectivity_decay_meters), 1e-6)
     )
     return np.clip(np.round(reflectivity), 1, 255).astype(np.uint8)
 
@@ -148,11 +154,14 @@ def ranges_to_pointcloud2_msg(
     frame_id: str,
     stamp,
     points_local: np.ndarray | None = None,
+    point_offset_step_ns: int = DEFAULT_POINT_OFFSET_STEP_NS,
+    reflectivity_max: float = DEFAULT_REFLECTIVITY_MAX,
+    reflectivity_decay_meters: float = DEFAULT_REFLECTIVITY_DECAY_METERS,
 ) -> sensor_msgs.msg.PointCloud2:
     """把 MuJoCo 射线结果转换成 Livox PointXYZRTLT PointCloud2。"""
     stamp_ns = _stamp_to_ns(stamp)
     line_indices = _compute_line_indices(ray_phi)
-    offset_times = _compute_offset_times(len(ranges))
+    offset_times = _compute_offset_times(len(ranges), point_offset_step_ns)
     valid = (ranges > 0.1) & (ranges < 100.0)
 
     if points_local is None:
@@ -188,7 +197,11 @@ def ranges_to_pointcloud2_msg(
     # PointCloud2 也保留整帧顺序和空回波占位，便于对齐实机包结构。
     all_points_local[~valid] = 0.0
     if np.any(valid):
-        reflectivity[valid] = _synthesize_reflectivity(ranges[valid])
+        reflectivity[valid] = _synthesize_reflectivity(
+            ranges[valid],
+            reflectivity_max,
+            reflectivity_decay_meters,
+        )
 
     cloud_array = _build_pointcloud2_array(
         all_points_local,
@@ -229,6 +242,9 @@ def ranges_to_custom_msg(
     stamp,
     lidar_id: int = 0,
     points_local: np.ndarray | None = None,
+    point_offset_step_ns: int = DEFAULT_POINT_OFFSET_STEP_NS,
+    reflectivity_max: float = DEFAULT_REFLECTIVITY_MAX,
+    reflectivity_decay_meters: float = DEFAULT_REFLECTIVITY_DECAY_METERS,
 ) -> object:
     """把 MuJoCo 射线结果转换成 Livox CustomMsg。"""
     if CustomMsg is None:
@@ -251,7 +267,7 @@ def ranges_to_custom_msg(
 
     valid = (ranges > 0.1) & (ranges < 100.0)
     line_indices = _compute_line_indices(ray_phi)
-    offset_times = _compute_offset_times(len(ranges))
+    offset_times = _compute_offset_times(len(ranges), point_offset_step_ns)
 
     # 这里继续使用帧末时间；前面已经确认当前 timestamp 语义是正确的。
     msg.header.stamp = stamp
@@ -269,7 +285,11 @@ def ranges_to_custom_msg(
     # 保留整帧发射顺序；空回波继续占位，避免破坏 line 和 offset_time。
     if np.any(valid):
         all_points_local[~valid] = 0.0
-        reflectivity[valid] = _synthesize_reflectivity(ranges[valid])
+        reflectivity[valid] = _synthesize_reflectivity(
+            ranges[valid],
+            reflectivity_max,
+            reflectivity_decay_meters,
+        )
     else:
         all_points_local[:] = 0.0
 

@@ -39,4 +39,5 @@ ros2 launch sim_bringup sim3d_nav.launch.py \
   map_file:=none \
   localization:=none \
   segmentation:=none \
-  lio:=pointlio
+  lio:=dual
+  

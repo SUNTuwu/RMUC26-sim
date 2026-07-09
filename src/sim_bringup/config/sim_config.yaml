@@ -1,7 +1,7 @@
 keyboard_test:
   ros__parameters:
     cmd_vel_topic: /cmd_vel_keyboard
-    linear_speed: 5.0
+    linear_speed: 3.0
     gimbal_yaw_speed: 7.0
 
 chassis:
@@ -19,8 +19,16 @@ sentry_sim_node:
 
     left_lidar_ip: 192.168.10.4
     right_lidar_ip: 192.168.10.5
-    mid360_points_per_scan: 4000
+    mid360_points_per_scan: 8000
+    livox_point_offset_step_ns: 0
+    livox_reflectivity_max: 70.0
+    livox_reflectivity_decay_meters: 2.0
 
+    # livox lidar config
+    enable_left_livox: true # enable both lidar and imu for left lidar - display, collision, and topic pub
+    enable_right_livox: true # enable both lidar and imu for right lidar - display, collision, and topic pub
+
+    livox_imu_offset_xyz: [0.011, 0.02329, -0.04412]
     livox_imu_offset_xyz: [0.011, 0.02329, -0.04412]
     livox_imu_rpy: [0.0, 0.0, 0.0]
     gimbal_visual_half_extents_xyz: [0.11, 0.11, 0.04]
