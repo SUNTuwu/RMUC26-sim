@@ -1,18 +1,26 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR="${SCRIPT_DIR}/.."
 
-export ROS_HOME="${ROS_HOME:-$ROOT_DIR/.ros}"
-mkdir -p "$ROS_HOME/log"
+source_setup() {
+  local setup_file="$1"
+  set +u
+  # shellcheck disable=SC1090
+  source "${setup_file}"
+  set -u
+}
 
-set +u
-source .venv/bin/activate
-source src/external/RM2026-sentry-ws/install/setup.bash
-source install/setup.bash
-set -u
+cd "${ROOT_DIR}"
 
-ENABLE_VIEWER=${ENABLE_VIEWER:-true}
+export ROS_HOME="${ROS_HOME:-${ROOT_DIR}/.ros}"
+mkdir -p "${ROS_HOME}/log"
 
-ros2 launch sim_bringup control_test.launch.py
+source_setup "${ROOT_DIR}/.venv/bin/activate"
+if [[ -f "${ROOT_DIR}/src/external/RM2026-sentry-ws/install/setup.bash" ]]; then
+  source_setup "${ROOT_DIR}/src/external/RM2026-sentry-ws/install/setup.bash"
+fi
+source_setup "${ROOT_DIR}/install/setup.bash"
+
+ros2 launch sim_bringup keyboard_control.launch.py

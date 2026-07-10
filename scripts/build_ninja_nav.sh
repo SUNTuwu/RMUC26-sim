@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_WS="."
-NAV_WS="./src/external/RM2026-sentry-ws"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR="${SCRIPT_DIR}/.."
+NAV_DIR="${ROOT_DIR}/src/external/RM2026-sentry-ws"
 ROS_DISTRO="${ROS_DISTRO:-jazzy}"
-ROS_DISTRO_UPPER="${ROS_DISTRO^^}"
-ROS_CXX_FLAGS="-DROS_${ROS_DISTRO_UPPER}"
 
 reset_ros_env() {
   unset AMENT_PREFIX_PATH
@@ -18,6 +17,22 @@ reset_ros_env() {
   unset ROS_ETC_DIR
   unset ROS_ROOT
 }
+
+source_setup() {
+  local setup_file="$1"
+  set +u
+  # shellcheck disable=SC1090
+  source "${setup_file}"
+  set -u
+}
+
+cleanup_nav_build() {
+  local pkg
+  for pkg in "${NAV_PACKAGES[@]}"; do
+    rm -rf "${NAV_DIR}/build/${pkg}" "${NAV_DIR}/install/${pkg}"
+  done
+}
+
 NAV_PACKAGES=(
   auto_aim_interfaces
   customized_client_msgs
@@ -36,27 +51,27 @@ NAV_PACKAGES=(
   main_bringup
 )
 
+############################### MAIN ####################################
+
 reset_ros_env
 
-if [[ -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
-  set +u
-  # shellcheck disable=SC1090
-  source "/opt/ros/${ROS_DISTRO}/setup.bash"
-  set -u
-else
+if [[ ! -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
   echo "ROS setup not found: /opt/ros/${ROS_DISTRO}/setup.bash" >&2
   exit 1
 fi
 
-cd "${NAV_WS}"
+source_setup "/opt/ros/${ROS_DISTRO}/setup.bash"
 
-# # Ensure all selected packages are regenerated with Ninja instead of any stale generator.
-# for pkg in "${NAV_PACKAGES[@]}"; do
-#   rm -rf "${NAV_WS}/build/${pkg}" "${NAV_WS}/install/${pkg}"
-# done
+if [[ "${1:-}" == "--rebuild" ]]; then
+  cleanup_nav_build
+elif [[ $# -ne 0 ]]; then
+  echo "Usage: $0 [--rebuild]" >&2
+  exit 1
+fi
+
+cd "${NAV_DIR}"
 
 colcon build \
   --symlink-install \
-  --executor sequential \
   --packages-select "${NAV_PACKAGES[@]}" \
-  --cmake-args -G Ninja "-DCMAKE_CXX_FLAGS=${ROS_CXX_FLAGS}"
+  --cmake-args -G Ninja "-DCMAKE_CXX_FLAGS=-DROS_${ROS_DISTRO^^}"

@@ -106,7 +106,7 @@ def generate_launch_description():
     container_name = LaunchConfiguration("container_name")
     use_nav_rviz = LaunchConfiguration("use_nav_rviz")
     sim_config_file = LaunchConfiguration("sim_config_file")
-    robot_description_xacro_path = LaunchConfiguration("robot_description_xacro_path")
+    robot_description_xacro_file = LaunchConfiguration("robot_description_xacro_file")
     python_prefix = _venv_python_prefix()
 
     sim_bringup_pkg = get_package_share_directory("sim_bringup")
@@ -140,7 +140,7 @@ def generate_launch_description():
         launch_arguments={
             "robot_type": robot_type,
             "sim_config_file": sim_config_file,
-            "robot_description_xacro_path": robot_description_xacro_path,
+            "robot_description_xacro_file": robot_description_xacro_file,
             "use_sim_time": use_sim_time,
             "enable_viewer": enable_viewer,
         }.items(),
@@ -243,7 +243,7 @@ def generate_launch_description():
         DeclareLaunchArgument("map_file", default_value="none"),
         DeclareLaunchArgument("robot_type", default_value=default_robot_type),
         DeclareLaunchArgument("sim_config_file", default_value=default_sim_config_path),
-        DeclareLaunchArgument("robot_description_xacro_path", default_value=default_robot_xacro_path),
+        DeclareLaunchArgument("robot_description_xacro_file", default_value=default_robot_xacro_path),
         DeclareLaunchArgument("use_lio_rviz", default_value="false"),
         DeclareLaunchArgument("localization", default_value="none"),
         DeclareLaunchArgument("segmentation", default_value="none"),

@@ -3,11 +3,12 @@ keyboard_test:
     cmd_vel_topic: /cmd_vel_keyboard
     linear_speed: 3.0
     gimbal_yaw_speed: 7.0
+    tty_device: /dev/tty
+    tty_key_timeout_sec: 0.5
 
 chassis:
   ros__parameters:
     keyboard_cmd_vel_topic: /cmd_vel_keyboard
-    nav_cmd_vel_topic: /cmd_vel_processed
     cmd_vel_out_topic: /cmd_vel_chassis
     publish_rate: 100.0
     small_gyro_spin_rate: 6.0
@@ -26,9 +27,8 @@ sentry_sim_node:
 
     # livox lidar config
     enable_left_livox: true # enable both lidar and imu for left lidar - display, collision, and topic pub
-    enable_right_livox: true # enable both lidar and imu for right lidar - display, collision, and topic pub
+    enable_right_livox: false # enable both lidar and imu for right lidar - display, collision, and topic pub
 
-    livox_imu_offset_xyz: [0.011, 0.02329, -0.04412]
     livox_imu_offset_xyz: [0.011, 0.02329, -0.04412]
     livox_imu_rpy: [0.0, 0.0, 0.0]
     gimbal_visual_half_extents_xyz: [0.11, 0.11, 0.04]
@@ -56,7 +56,7 @@ sentry_sim_node:
     boundary_wall_thickness: 0.05
     boundary_wall_height: 1.2
     
-    use_keep_stand: false
+    use_keep_stand: false # force the robot to stand upright 
     chassis_cmd_vel_topic: /cmd_vel_chassis
     cmd_vel_timeout_sec: 0.5
     chassis_linear_accel_limit: 8.0

@@ -25,9 +25,10 @@ sentry_sim/
 - `sim_assets`
   - 安装 MuJoCo 所需的 `meshes/` 资产，供仿真场景和碰撞模型使用。
 - `sim_core`
-  - 提供 `sentry_sim_node`，负责 MuJoCo 仿真本体和传感器模拟。
-  - 提供 `livox_bridge.py`，把仿真雷达点云转换成 `livox_ros_driver2/msg/CustomMsg`，直接对接实机算法链。
-  - 提供 `chassis`、`keyboard_test`、`nav_feedback_adapter` 等控制与导航适配节点。
+  - 提供 `sentry_sim_node`，负责 MuJoCo 仿真本体、场景装配、物理推进和传感器模拟。
+  - 内部按 `runtime / components / adapters` 分层，分别承载仿真内核、组件执行和外部接口适配。
+  - 提供 `components/_livox_bridge.py`，把仿真雷达点云编码成 `livox_ros_driver2/msg/CustomMsg` / PointCloud2，直接对接实机算法链。
+  - 提供 `adapters/chassis.py`、`keyboard_test`、`adapters/nav_feedback_adapter.py` 等控制与导航适配节点。
 - `sim_bringup`
   - 提供 `sim.launch.py`，用于纯仿真启动。
   - 提供 `sim3d_nav.launch.py`，用于仿真接入外部状态估计、建图、导航链。
@@ -42,6 +43,28 @@ sentry_sim/
 - `odom -> base_link` 由状态估计节点负责，当前对接链路默认是 `point_lio`。
 - `map -> odom` 由定位节点负责，例如 `dll_localization`。
 - 仿真雷达直接发布 `livox_ros_driver2/msg/CustomMsg`，避免额外 bridge 进程和消息格式偏差。
+
+### sim_core 内部分层
+
+- `runtime`
+  - 对应 `sim_core/runtime.py` 及其依赖的 `frame_tree.py`、`scene_builder.py`。
+  - 负责加载机器人 frame 树、拼装 MuJoCo 场景、维护物理步进、仿真时钟和内部真值读取接口。
+  - 只关心仿真内部状态与物理执行，不直接承接键盘、导航、串口这类外部协议语义。
+- `components`
+  - 对应 `sim_core/components/` 与 `component_manager.py`。
+  - 由 `ComponentManager` 挂载到 `runtime` 周围，消费统一的内部控制入口，例如 `/cmd_vel_chassis`，并发布仿真可观测数据，例如 `/joint_states`、Livox 点云和 IMU。
+  - `comp_chassis.py`、`comp_gimbal.py`、`comp_livox.py` 属于这一层；`_livox_bridge.py` 是 `comp_livox.py` 的私有编码辅助，不单独承担节点生命周期。
+- `adapters`
+  - 对应 `sim_core/adapters/` 下的独立 ROS 节点。
+  - 负责把外部控制链或导航链的话题语义整理成仿真内部统一接口，或把仿真/估计结果转换成外部更需要的反馈接口。
+  - `adapters/chassis.py` 负责把键盘控制整理成 `/cmd_vel_chassis`；`adapters/nav_feedback_adapter.py` 负责把 `/gimbal_Odometry`、`/joint_states` 等整理成 `/Odometry` 和外部反馈话题。
+
+### 分层约束
+
+- `runtime` 不直接依赖外部导航链的话题协议，也不吸收控制适配逻辑。
+- `components` 只实现内部执行与传感器发布，不直接理解键盘模式、导航反馈协议或串口业务语义。
+- `adapters` 不直接操作 MuJoCo 内部对象，只通过 ROS 话题与 `runtime/components` 交互。
+- 新增功能时，若需求是“怎么模拟/怎么发布仿真观测”，优先放 `components`；若需求是“怎么把外部语义转进来或转出去”，优先放 `adapters`；若需求是“怎么建场景/推进物理/读内部真值”，放 `runtime`。
 
 ## scripts 目录
 

@@ -1,4 +1,4 @@
-from setuptools import find_packages, setup
+from setuptools import setup
 import glob
 
 package_name = 'sim_bringup'
@@ -32,7 +32,7 @@ setup(
     packages=[package_name],
     package_dir={package_name: 'src'},
     data_files=data_files,
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'pynput'],
     zip_safe=True,
     maintainer='somo',
     maintainer_email='sunnycat_158@qq.com',
@@ -41,5 +41,9 @@ setup(
     extras_require={
         'test': ['pytest'],
     },
-    entry_points={'console_scripts': []},
+    entry_points={
+        'console_scripts': [
+            'keyboard_control = sim_bringup.keyboard_control:main',
+        ],
+    },
 )

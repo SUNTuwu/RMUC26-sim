@@ -17,7 +17,6 @@ class ChassisNode(Node):
     def __init__(self) -> None:
         super().__init__("chassis")
         self.declare_parameter("keyboard_cmd_vel_topic", "/cmd_vel_keyboard")
-        self.declare_parameter("nav_cmd_vel_topic", "/cmd_vel_processed")
         self.declare_parameter("cmd_vel_out_topic", "/cmd_vel_chassis")
         self.declare_parameter("publish_rate", 50.0)
         self.declare_parameter("small_gyro_spin_rate", 6.0)
@@ -26,7 +25,6 @@ class ChassisNode(Node):
         self.keyboard_cmd_vel_topic = str(
             self.get_parameter("keyboard_cmd_vel_topic").value
         )
-        self.nav_cmd_vel_topic = str(self.get_parameter("nav_cmd_vel_topic").value)
         self.cmd_vel_out_topic = str(self.get_parameter("cmd_vel_out_topic").value)
         self.publish_rate = max(float(self.get_parameter("publish_rate").value), 1.0)
         self.small_gyro_spin_rate = float(
@@ -55,7 +53,6 @@ class ChassisNode(Node):
         self.get_logger().info(
             "chassis ready: "
             f"keyboard={self.keyboard_cmd_vel_topic}, "
-            f"nav_reserved={self.nav_cmd_vel_topic}, "
             f"publish={self.cmd_vel_out_topic}, "
             f"publish_rate={self.publish_rate:.1f}, "
             f"small_gyro_spin_rate={self.small_gyro_spin_rate:.2f}, "

@@ -19,8 +19,6 @@
   <depend>auto_aim_interfaces</depend>
   <depend>livox_ros_driver2</depend>
   <exec_depend>sim_assets</exec_depend>
-  <exec_depend>python3-evdev</exec_depend>
-  <exec_depend>python3-pynput</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

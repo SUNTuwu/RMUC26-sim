@@ -10,14 +10,22 @@ package_name = "sim_core"
 setup(
     name=package_name,
     version="0.0.0",
-    packages=[package_name],
-    package_dir={package_name: "src"},
+    packages=[
+        package_name,
+        package_name + ".adapters",
+        package_name + ".components",
+    ],
+    package_dir={
+        package_name: "src",
+        package_name + ".adapters": "src/adapters",
+        package_name + ".components": "src/components",
+    },
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
     ],
-    install_requires=["setuptools", "pynput", "evdev"],
+    install_requires=["setuptools"],
     zip_safe=True,
     maintainer="somo",
     maintainer_email="sunnycat_158@qq.com",
@@ -26,10 +34,9 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "sentry_sim_node = sim_core.sentry_sim_node:main",
-            "keyboard_test = sim_core.keyboard_test:main",
-            "chassis = sim_core.chassis:main",
-            "nav_feedback_adapter = sim_core.nav_feedback_adapter:main",
+            "sentry_sim_node = sim_core.runtime:main",
+            "chassis = sim_core.adapters.chassis:main",
+            "nav_feedback_adapter = sim_core.adapters.nav_feedback_adapter:main",
         ],
     },
 )

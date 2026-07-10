@@ -61,7 +61,9 @@ def _compute_offset_times(num_points: int, point_offset_step_ns: int) -> np.ndar
     point_offsets = np.arange(num_points, dtype=np.uint64) * np.uint64(
         max(int(point_offset_step_ns), 0)
     )
-    return np.minimum(point_offsets, np.uint64(np.iinfo(np.uint32).max)).astype(np.uint32)
+    return np.minimum(point_offsets, np.uint64(np.iinfo(np.uint32).max)).astype(
+        np.uint32
+    )
 
 
 def _synthesize_reflectivity(
@@ -180,13 +182,33 @@ def ranges_to_pointcloud2_msg(
         cloud.point_step = 26
         cloud.row_step = 0
         cloud.fields = [
-            sensor_msgs.msg.PointField(name="x", offset=0, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-            sensor_msgs.msg.PointField(name="y", offset=4, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-            sensor_msgs.msg.PointField(name="z", offset=8, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-            sensor_msgs.msg.PointField(name="intensity", offset=12, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-            sensor_msgs.msg.PointField(name="tag", offset=16, datatype=sensor_msgs.msg.PointField.UINT8, count=1),
-            sensor_msgs.msg.PointField(name="line", offset=17, datatype=sensor_msgs.msg.PointField.UINT8, count=1),
-            sensor_msgs.msg.PointField(name="timestamp", offset=18, datatype=sensor_msgs.msg.PointField.FLOAT64, count=1),
+            sensor_msgs.msg.PointField(
+                name="x", offset=0, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1
+            ),
+            sensor_msgs.msg.PointField(
+                name="y", offset=4, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1
+            ),
+            sensor_msgs.msg.PointField(
+                name="z", offset=8, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1
+            ),
+            sensor_msgs.msg.PointField(
+                name="intensity",
+                offset=12,
+                datatype=sensor_msgs.msg.PointField.FLOAT32,
+                count=1,
+            ),
+            sensor_msgs.msg.PointField(
+                name="tag", offset=16, datatype=sensor_msgs.msg.PointField.UINT8, count=1
+            ),
+            sensor_msgs.msg.PointField(
+                name="line", offset=17, datatype=sensor_msgs.msg.PointField.UINT8, count=1
+            ),
+            sensor_msgs.msg.PointField(
+                name="timestamp",
+                offset=18,
+                datatype=sensor_msgs.msg.PointField.FLOAT64,
+                count=1,
+            ),
         ]
         return cloud
 
@@ -222,13 +244,33 @@ def ranges_to_pointcloud2_msg(
     cloud.point_step = 26
     cloud.row_step = cloud.width * cloud.point_step
     cloud.fields = [
-        sensor_msgs.msg.PointField(name="x", offset=0, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-        sensor_msgs.msg.PointField(name="y", offset=4, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-        sensor_msgs.msg.PointField(name="z", offset=8, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-        sensor_msgs.msg.PointField(name="intensity", offset=12, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1),
-        sensor_msgs.msg.PointField(name="tag", offset=16, datatype=sensor_msgs.msg.PointField.UINT8, count=1),
-        sensor_msgs.msg.PointField(name="line", offset=17, datatype=sensor_msgs.msg.PointField.UINT8, count=1),
-        sensor_msgs.msg.PointField(name="timestamp", offset=18, datatype=sensor_msgs.msg.PointField.FLOAT64, count=1),
+        sensor_msgs.msg.PointField(
+            name="x", offset=0, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1
+        ),
+        sensor_msgs.msg.PointField(
+            name="y", offset=4, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1
+        ),
+        sensor_msgs.msg.PointField(
+            name="z", offset=8, datatype=sensor_msgs.msg.PointField.FLOAT32, count=1
+        ),
+        sensor_msgs.msg.PointField(
+            name="intensity",
+            offset=12,
+            datatype=sensor_msgs.msg.PointField.FLOAT32,
+            count=1,
+        ),
+        sensor_msgs.msg.PointField(
+            name="tag", offset=16, datatype=sensor_msgs.msg.PointField.UINT8, count=1
+        ),
+        sensor_msgs.msg.PointField(
+            name="line", offset=17, datatype=sensor_msgs.msg.PointField.UINT8, count=1
+        ),
+        sensor_msgs.msg.PointField(
+            name="timestamp",
+            offset=18,
+            datatype=sensor_msgs.msg.PointField.FLOAT64,
+            count=1,
+        ),
     ]
     cloud.data = cloud_array.tobytes()
     return cloud
