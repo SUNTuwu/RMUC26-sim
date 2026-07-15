@@ -159,45 +159,31 @@ class NavFeedbackAdapter(Node):
 
         source = copy.deepcopy(self.latest_gimbal_odom)
         child_frame_id = source.child_frame_id or "left_livox_frame"
+        odom_frame_id = source.header.frame_id or "odom"
+        source_stamp = Time.from_msg(source.header.stamp)
 
         try:
-            transform = self.tf_buffer.lookup_transform(
+            odom_to_base = self.tf_buffer.lookup_transform(
+                odom_frame_id,
+                self.base_frame,
+                source_stamp,
+            )
+            base_to_child = self.tf_buffer.lookup_transform(
                 self.base_frame,
                 child_frame_id,
-                Time.from_msg(source.header.stamp),
+                source_stamp,
             )
         except TransformException as ex:
             self.get_logger().warn(
-                f"failed to transform odometry {child_frame_id} -> {self.base_frame}: {ex}",
+                f"failed to query odometry TF for {self.base_frame}: {ex}",
                 throttle_duration_sec=1.0,
             )
             return
 
-        tf_translation = transform.transform.translation
-        tf_rotation = transform.transform.rotation
+        tf_rotation = base_to_child.transform.rotation
         q_base_child = normalize_quaternion(
             (tf_rotation.x, tf_rotation.y, tf_rotation.z, tf_rotation.w)
         )
-        q_child_base = quaternion_conjugate(q_base_child)
-
-        source_orientation = source.pose.pose.orientation
-        q_odom_child = normalize_quaternion(
-            (
-                source_orientation.x,
-                source_orientation.y,
-                source_orientation.z,
-                source_orientation.w,
-            )
-        )
-        q_odom_base = normalize_quaternion(
-            quaternion_multiply(q_odom_child, q_child_base)
-        )
-
-        child_to_base_translation = rotate_vector(
-            q_child_base,
-            (-tf_translation.x, -tf_translation.y, -tf_translation.z),
-        )
-        base_position_delta = rotate_vector(q_odom_child, child_to_base_translation)
 
         source_linear = source.twist.twist.linear
         source_angular = source.twist.twist.angular
@@ -212,13 +198,10 @@ class NavFeedbackAdapter(Node):
 
         chassis_odom = source
         chassis_odom.child_frame_id = self.base_frame
-        chassis_odom.pose.pose.position.x += base_position_delta[0]
-        chassis_odom.pose.pose.position.y += base_position_delta[1]
-        chassis_odom.pose.pose.position.z += base_position_delta[2]
-        chassis_odom.pose.pose.orientation.x = q_odom_base[0]
-        chassis_odom.pose.pose.orientation.y = q_odom_base[1]
-        chassis_odom.pose.pose.orientation.z = q_odom_base[2]
-        chassis_odom.pose.pose.orientation.w = q_odom_base[3]
+        chassis_odom.pose.pose.position.x = odom_to_base.transform.translation.x
+        chassis_odom.pose.pose.position.y = odom_to_base.transform.translation.y
+        chassis_odom.pose.pose.position.z = odom_to_base.transform.translation.z
+        chassis_odom.pose.pose.orientation = odom_to_base.transform.rotation
         chassis_odom.twist.twist.linear.x = linear_in_base[0]
         chassis_odom.twist.twist.linear.y = linear_in_base[1]
         chassis_odom.twist.twist.linear.z = linear_in_base[2]
