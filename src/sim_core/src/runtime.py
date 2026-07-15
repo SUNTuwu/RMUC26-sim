@@ -24,6 +24,8 @@ from .frame_tree import (
 )
 from .scene_builder import (
     COLLISION_GEOM_GROUP,
+    base_force_debug_body_name,
+    base_force_debug_geom_name,
     build_scene_xml,
     frame_resource,
     livox_accel_debug_body_name,
@@ -42,6 +44,7 @@ DEFAULT_BOUNDARY_X_MAX = 13.5
 DEFAULT_BOUNDARY_Y_MIN = -7.0
 DEFAULT_BOUNDARY_Y_MAX = 7.0
 DEFAULT_USE_KEEP_STAND = False
+DEFAULT_USE_VERTICAL_LAND_FORCE = True
 DEFAULT_TILT_DOWNFORCE_THRESHOLD_DEG = 15.0
 DEFAULT_TILT_DOWNFORCE_SCALE = 300.0
 DEFAULT_TILT_DOWNFORCE_EXP_GAIN = 6.0
@@ -116,6 +119,7 @@ class SimulationRuntime:
         physics_dt: float,
         enable_viewer: bool,
         use_keep_stand: bool,
+        use_vertical_land_force: bool,
         tilt_downforce_threshold_deg: float,
         tilt_downforce_scale: float,
         tilt_downforce_exp_gain: float,
@@ -130,6 +134,7 @@ class SimulationRuntime:
         self.physics_dt = max(float(physics_dt), 1e-6)
         self.enable_viewer = bool(enable_viewer)
         self.use_keep_stand = bool(use_keep_stand)
+        self.use_vertical_land_force = bool(use_vertical_land_force)
         self.tilt_downforce_threshold_rad = math.radians(
             max(float(tilt_downforce_threshold_deg), 0.0)
         )
@@ -149,7 +154,7 @@ class SimulationRuntime:
         self.running = False
         self.physics_lock = threading.Lock()
         self.physics_thread = None
-        self.motion_provider = None
+        self.control_provider = None
         self.latest_sim_time_ns = 0
         self.odom_origin_x = 0.0
         self.odom_origin_y = 0.0
@@ -176,6 +181,19 @@ class SimulationRuntime:
             mujoco.mjtObj.mjOBJ_BODY,
             FRAME_BASE_LINK,
         )
+        self.base_force_debug_body_id = self._require_name(
+            mujoco.mjtObj.mjOBJ_BODY,
+            base_force_debug_body_name(),
+        )
+        self.base_force_debug_geom_id = self._require_name(
+            mujoco.mjtObj.mjOBJ_GEOM,
+            base_force_debug_geom_name(),
+        )
+        self.base_force_debug_mocap_id = int(
+            self.model.body_mocapid[self.base_force_debug_body_id]
+        )
+        if self.base_force_debug_mocap_id < 0:
+            raise RuntimeError("MuJoCo mocap body not found: base force debug")
         self.livox_handles: dict[str, dict[str, int]] = {}
         for frame_name in self.enabled_livox_frames:
             self.livox_handles[frame_name] = self._bind_livox_frame(frame_name)
@@ -221,13 +239,13 @@ class SimulationRuntime:
             "gyro_sensor_adr": int(self.model.sensor_adr[gyro_sensor_id]),
         }
 
-    def set_motion_provider(self, motion_provider) -> None:
-        self.motion_provider = motion_provider
+    def set_control_provider(self, control_provider) -> None:
+        self.control_provider = control_provider
 
     def make_lidar_args(self) -> dict[str, object]:
         return {
             "geomgroup": np.array([1, 0, 1, 0, 0, 0], dtype=np.uint8),
-            "bodyexclude": self.gimbal_body_id,
+            "bodyexclude": self.base_body_id,
         }
 
     def start(self) -> None:
@@ -360,9 +378,39 @@ class SimulationRuntime:
         )
         self.model.geom_size[handles["accel_geom_id"], 1] = geom_half_height
 
+    def _update_base_force_debug_geom(self, base_force_world: np.ndarray) -> None:
+        force_xy_world = np.array(
+            [float(base_force_world[0]), float(base_force_world[1]), 0.0],
+            dtype=np.float64,
+        )
+        force_norm = float(np.linalg.norm(force_xy_world))
+        geom_length = force_norm * float(self.scene_geometry["base_force_debug_scale"])
+        min_length = float(self.scene_geometry["base_force_debug_min_length"])
+        if force_norm <= 1e-9 or geom_length <= min_length:
+            direction_world = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            geom_length = min_length
+        else:
+            direction_world = force_xy_world / force_norm
+        geom_half_height = max(geom_length * 0.5, min_length * 0.5)
+        base_pos = self.data.xpos[self.base_body_id].copy()
+        base_debug_height = 0.5 * float(self.scene_geometry["base_collision_height"])
+        geom_center = base_pos + np.array(
+            [0.0, 0.0, base_debug_height],
+            dtype=np.float64,
+        ) + direction_world * geom_half_height
+        self.data.mocap_pos[self.base_force_debug_mocap_id, :] = geom_center
+        self.data.mocap_quat[self.base_force_debug_mocap_id, :] = np.asarray(
+            quat_from_local_z_axis(direction_world),
+            dtype=np.float64,
+        )
+        self.model.geom_size[self.base_force_debug_geom_id, 0] = float(
+            self.scene_geometry["base_force_debug_radius"]
+        )
+        self.model.geom_size[self.base_force_debug_geom_id, 1] = geom_half_height
+
     def _initialize_odom_reference_locked(self) -> None:
-        gimbal_pos = self.data.qpos[0:3]
-        gimbal_quat = self.data.qpos[3:7]
+        gimbal_pos = self.data.xpos[self.gimbal_body_id].copy()
+        gimbal_quat = self.data.xquat[self.gimbal_body_id].copy()
         gimbal_yaw = math.atan2(
             2.0 * (gimbal_quat[0] * gimbal_quat[3] + gimbal_quat[1] * gimbal_quat[2]),
             1.0 - 2.0 * (gimbal_quat[2] ** 2 + gimbal_quat[3] ** 2),
@@ -370,7 +418,7 @@ class SimulationRuntime:
         self.odom_origin_x = float(gimbal_pos[0])
         self.odom_origin_y = float(gimbal_pos[1])
         self.odom_origin_yaw = gimbal_yaw
-        self.gimbal_joint_pos = float(self.data.qpos[self.gimbal_qpos_adr])
+        self.gimbal_joint_pos = -float(self.data.qpos[self.gimbal_qpos_adr])
         self.gimbal_joint_vel = 0.0
 
     def _compute_surface_aligned_quat(
@@ -390,7 +438,7 @@ class SimulationRuntime:
             gravity_dir,
             self.keep_stand_geomgroup,
             True,
-            self.gimbal_body_id,
+            self.base_body_id,
             geomid,
             surface_normal,
         )
@@ -440,51 +488,45 @@ class SimulationRuntime:
         while self.running and rclpy.ok():
             current_sim_time_ns = self.latest_sim_time_ns
             with self.physics_lock:
-                gimbal_quat = self.data.qpos[3:7]
-                gimbal_yaw = math.atan2(
-                    2.0 * (gimbal_quat[0] * gimbal_quat[3] + gimbal_quat[1] * gimbal_quat[2]),
-                    1.0 - 2.0 * (gimbal_quat[2] ** 2 + gimbal_quat[3] ** 2),
-                )
-                target_local_vx = 0.0
-                target_local_vy = 0.0
+                base_quat = self.data.qpos[3:7]
+                gimbal_rot_mat = self.data.xmat[self.gimbal_body_id].reshape(3, 3).copy()
+                base_linear_velocity_world = self.data.qvel[0:3].copy()
+                base_force_world = np.zeros(3, dtype=np.float64)
                 target_chassis_yaw_rate = 0.0
                 target_gimbal_yaw_rate = 0.0
-                if self.motion_provider is not None:
+                if self.control_provider is not None:
                     now_ros = self.node.get_clock().now()
                     (
-                        target_local_vx,
-                        target_local_vy,
+                        base_force_world,
                         target_chassis_yaw_rate,
                         target_gimbal_yaw_rate,
-                    ) = self.motion_provider(now_ros, self.physics_dt)
-                target_world_velocity = np.array(
-                    [
-                        target_local_vx * math.cos(gimbal_yaw) - target_local_vy * math.sin(gimbal_yaw),
-                        target_local_vx * math.sin(gimbal_yaw) + target_local_vy * math.cos(gimbal_yaw),
-                    ],
-                    dtype=np.float64,
-                )
+                    ) = self.control_provider(
+                        now_ros,
+                        self.physics_dt,
+                        gimbal_rot_mat,
+                        base_linear_velocity_world,
+                    )
+                base_force_world = np.asarray(base_force_world, dtype=np.float64)
                 self.data.xfrc_applied[self.gimbal_body_id, :] = 0.0
                 self.data.xfrc_applied[self.base_body_id, :] = 0.0
-                tilt_downforce = self._compute_tilt_downforce(
-                    self.data.xquat[self.base_body_id].copy()
+                self.data.xfrc_applied[self.base_body_id, 0:3] = base_force_world
+                if self.use_vertical_land_force:
+                    tilt_downforce = self._compute_tilt_downforce(
+                        self.data.xquat[self.base_body_id].copy()
+                    )
+                    if tilt_downforce > 0.0:
+                        self.data.xfrc_applied[self.base_body_id, 2] -= tilt_downforce
+                self.data.qvel[5] = float(target_chassis_yaw_rate)
+                self.data.qvel[self.gimbal_dof_adr] = float(
+                    target_gimbal_yaw_rate - target_chassis_yaw_rate
                 )
-                if tilt_downforce > 0.0:
-                    self.data.xfrc_applied[self.base_body_id, 2] = -tilt_downforce
-                self.gimbal_joint_pos = float(self.data.qpos[self.gimbal_qpos_adr])
-                self.gimbal_joint_vel = target_chassis_yaw_rate - target_gimbal_yaw_rate
-                self.data.qpos[self.gimbal_qpos_adr] = self.gimbal_joint_pos
-                self.data.qvel[0] = float(target_world_velocity[0])
-                self.data.qvel[1] = float(target_world_velocity[1])
-                self.data.qvel[5] = float(target_gimbal_yaw_rate)
-                self.data.qvel[self.gimbal_dof_adr] = float(self.gimbal_joint_vel)
                 mujoco.mj_step(self.model, self.data)
                 quat = self.data.qpos[3:7].copy()
-                _, _, yaw = quat_to_rpy(quat)
+                _, _, base_yaw = quat_to_rpy(quat)
                 if self.use_keep_stand:
                     aligned_quat = self._compute_surface_aligned_quat(
                         self.data.qpos[0:3].copy(),
-                        yaw,
+                        base_yaw,
                     )
                     if aligned_quat is not None:
                         self.data.qpos[3:7] = aligned_quat
@@ -506,9 +548,10 @@ class SimulationRuntime:
                 for frame_name in self.enabled_livox_frames:
                     acc, _ = self.read_imu_for_frame_locked(frame_name)
                     self._update_imu_accel_debug_geom(frame_name, acc / GRAVITY_M_S2)
+                self._update_base_force_debug_geom(base_force_world)
                 mujoco.mj_forward(self.model, self.data)
-                pos = self.data.qpos[0:3]
-                quat = self.data.qpos[3:7]
+                pos = self.data.xpos[self.gimbal_body_id].copy()
+                quat = self.data.xquat[self.gimbal_body_id].copy()
                 gimbal_yaw = math.atan2(
                     2.0 * (quat[0] * quat[3] + quat[1] * quat[2]),
                     1.0 - 2.0 * (quat[2] ** 2 + quat[3] ** 2),
@@ -520,8 +563,8 @@ class SimulationRuntime:
                 self.odom_x = cos_origin * dx + sin_origin * dy
                 self.odom_y = -sin_origin * dx + cos_origin * dy
                 self.odom_yaw = wrap_to_pi(gimbal_yaw - self.odom_origin_yaw)
-                self.gimbal_joint_pos = float(self.data.qpos[self.gimbal_qpos_adr])
-                self.gimbal_joint_vel = float(self.data.qvel[self.gimbal_dof_adr])
+                self.gimbal_joint_pos = -float(self.data.qpos[self.gimbal_qpos_adr])
+                self.gimbal_joint_vel = -float(self.data.qvel[self.gimbal_dof_adr])
                 current_sim_time_ns = self._sim_time_ns_locked()
                 self.latest_sim_time_ns = current_sim_time_ns
                 self._sync_viewer()
@@ -565,6 +608,12 @@ class SentrySimNode(Node):
             raise ValueError("boundary_y_min must be smaller than boundary_y_max")
         use_keep_stand = bool(
             self.declare_parameter("use_keep_stand", DEFAULT_USE_KEEP_STAND).value
+        )
+        use_vertical_land_force = bool(
+            self.declare_parameter(
+                "use_vertical_land_force",
+                DEFAULT_USE_VERTICAL_LAND_FORCE,
+            ).value
         )
         tilt_downforce_threshold_deg = max(
             float(
@@ -641,6 +690,7 @@ class SentrySimNode(Node):
             physics_dt=physics_dt,
             enable_viewer=enable_viewer,
             use_keep_stand=use_keep_stand,
+            use_vertical_land_force=use_vertical_land_force,
             tilt_downforce_threshold_deg=tilt_downforce_threshold_deg,
             tilt_downforce_scale=tilt_downforce_scale,
             tilt_downforce_exp_gain=tilt_downforce_exp_gain,
@@ -652,7 +702,7 @@ class SentrySimNode(Node):
             scene_geometry=scene_geometry,
         )
         self.component_manager = ComponentManager(self, self.runtime)
-        self.runtime.set_motion_provider(self.component_manager.compute_motion_command)
+        self.runtime.set_control_provider(self.component_manager.compute_control_action)
         self.runtime.start()
         self.get_logger().info(
             f"sentry_sim_node ready: enable_left_livox={enable_left_livox}, "

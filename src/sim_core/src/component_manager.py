@@ -35,6 +35,18 @@ class ComponentManager:
             float(node.declare_parameter("chassis_linear_accel_limit", 3.0).value),
             0.0,
         )
+        chassis_velocity_p_gain = max(
+            float(node.declare_parameter("chassis_velocity_p_gain", 120.0).value),
+            0.0,
+        )
+        chassis_velocity_d_gain = max(
+            float(node.declare_parameter("chassis_velocity_d_gain", 20.0).value),
+            0.0,
+        )
+        chassis_max_force = max(
+            float(node.declare_parameter("chassis_max_force", 200.0).value),
+            0.0,
+        )
         chassis_angular_accel_limit = max(
             float(node.declare_parameter("chassis_angular_accel_limit", 6.0).value),
             0.0,
@@ -58,6 +70,9 @@ class ComponentManager:
         self.chassis_component = ChassisComponent(
             self.cmd_vel_timeout_sec,
             chassis_linear_accel_limit,
+            chassis_velocity_p_gain,
+            chassis_velocity_d_gain,
+            chassis_max_force,
         )
         self.gimbal_component = GimbalComponent(
             self.cmd_vel_timeout_sec,
@@ -114,11 +129,7 @@ class ComponentManager:
                 f"active command source -> {self.active_cmd_source}"
             )
 
-    def compute_motion_command(
-        self,
-        now,
-        dt: float,
-    ) -> tuple[float, float, float, float]:
+    def _refresh_active_cmd_source(self, now) -> None:
         is_cmd_fresh = False
         if self.chassis_component.last_cmd_time is not None:
             age = (now - self.chassis_component.last_cmd_time).nanoseconds / 1e9
@@ -128,9 +139,23 @@ class ComponentManager:
             self.node.get_logger().info(
                 f"active command source -> {self.active_cmd_source}"
             )
-        vx, vy = self.chassis_component.sample(now, dt)
+
+    def compute_control_action(
+        self,
+        now,
+        dt: float,
+        gimbal_rot_mat,
+        base_linear_velocity_world,
+    ) -> tuple[object, float, float]:
+        self._refresh_active_cmd_source(now)
+        base_force_world = self.chassis_component.compute_drive_force(
+            now,
+            dt,
+            gimbal_rot_mat,
+            base_linear_velocity_world,
+        )
         chassis_yaw_rate, gimbal_yaw_rate = self.gimbal_component.sample(now, dt)
-        return vx, vy, chassis_yaw_rate, gimbal_yaw_rate
+        return base_force_world, chassis_yaw_rate, gimbal_yaw_rate
 
     def publish_joint_state(self) -> None:
         stamp, joint_pos, joint_vel = self.runtime.read_joint_state()

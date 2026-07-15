@@ -13,6 +13,7 @@ chassis:
     publish_rate: 100.0
     small_gyro_spin_rate: 6.0
     small_gyro_toggle_timeout_sec: 1.0
+    linear_cmd_timeout_sec: 0.5
 
 sentry_sim_node:
   ros__parameters:
@@ -27,7 +28,7 @@ sentry_sim_node:
 
     # livox lidar config
     enable_left_livox: true # enable both lidar and imu for left lidar - display, collision, and topic pub
-    enable_right_livox: false # enable both lidar and imu for right lidar - display, collision, and topic pub
+    enable_right_livox: true # enable both lidar and imu for right lidar - display, collision, and topic pub
 
     livox_imu_offset_xyz: [0.011, 0.02329, -0.04412]
     livox_imu_rpy: [0.0, 0.0, 0.0]
@@ -53,13 +54,20 @@ sentry_sim_node:
     imu_accel_debug_radius: 0.003
     imu_accel_debug_scale: 0.12
     imu_accel_debug_min_length: 0.01
+    base_force_debug_radius: 0.01
+    base_force_debug_scale: 0.006
+    base_force_debug_min_length: 0.05
     boundary_wall_thickness: 0.05
     boundary_wall_height: 1.2
     
     use_keep_stand: false # force the robot to stand upright 
+    use_vertical_land_force: true # apply external vertical land force to keep robot upright
     chassis_cmd_vel_topic: /cmd_vel_chassis
     cmd_vel_timeout_sec: 0.5
     chassis_linear_accel_limit: 8.0
+    chassis_velocity_p_gain: 180.0
+    chassis_velocity_d_gain: 10.0
+    chassis_max_force: 250.0
     chassis_angular_accel_limit: 10.0
     gimbal_angular_accel_limit: 10.0
     tilt_downforce_threshold_deg: 10.0

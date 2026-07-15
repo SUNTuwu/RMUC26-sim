@@ -20,6 +20,18 @@ except ImportError:
     pynput_keyboard = None
 
 
+OPPOSITE_DIRECTION_KEYS = {
+    "w": "s",
+    "s": "w",
+    "up": "down",
+    "down": "up",
+    "a": "d",
+    "d": "a",
+    "left": "right",
+    "right": "left",
+}
+
+
 class _TtyKeyReader:
     """Read one logical key at a time from a tty device."""
 
@@ -153,6 +165,17 @@ class KeyboardTestNode(Node):
             "up/down=forward/backward, left/right=gimbal yaw, space=toggle small gyro, q=quit."
         )
 
+    def _activate_direction_key_locked(self, logical_key: str) -> bool:
+        opposite_key = OPPOSITE_DIRECTION_KEYS.get(logical_key)
+        state_changed = False
+        if opposite_key is not None and opposite_key in self._active_keys:
+            self._active_keys.remove(opposite_key)
+            state_changed = True
+        if logical_key in self._active_keys:
+            return state_changed
+        self._active_keys.add(logical_key)
+        return True
+
     def _normalize_key(self, key) -> str | None:
         if isinstance(key, pynput_keyboard.KeyCode):
             if key.char is None:
@@ -261,9 +284,8 @@ class KeyboardTestNode(Node):
         with self._state_lock:
             if self._destroyed:
                 return False
-            state_changed = self._active_keys != {logical_key}
             self._active_keys.clear()
-            self._active_keys.add(logical_key)
+            state_changed = self._activate_direction_key_locked(logical_key)
 
         self._arm_tty_release_timer()
         if state_changed:
@@ -286,9 +308,9 @@ class KeyboardTestNode(Node):
             return
 
         with self._state_lock:
-            if logical_key in self._active_keys:
+            state_changed = self._activate_direction_key_locked(logical_key)
+            if not state_changed:
                 return
-            self._active_keys.add(logical_key)
         self._publish_current_command(f"press {logical_key}")
 
     def _on_release(self, key):

@@ -46,6 +46,9 @@ DEFAULT_IMU_SITE_RADIUS = 0.006
 DEFAULT_IMU_ACCEL_DEBUG_RADIUS = 0.003
 DEFAULT_IMU_ACCEL_DEBUG_SCALE = 0.12
 DEFAULT_IMU_ACCEL_DEBUG_MIN_LENGTH = 0.002
+DEFAULT_BASE_FORCE_DEBUG_RADIUS = 0.006
+DEFAULT_BASE_FORCE_DEBUG_SCALE = 0.004
+DEFAULT_BASE_FORCE_DEBUG_MIN_LENGTH = 0.03
 DEFAULT_BOUNDARY_WALL_THICKNESS = 0.05
 DEFAULT_BOUNDARY_WALL_HEIGHT = 1.2
 DEFAULT_LIVOX_IMU_OFFSET_XYZ = (-0.011, -0.02329, 0.04412)
@@ -80,6 +83,14 @@ def livox_accel_debug_body_name(frame_name: str) -> str:
     return frame_resource(frame_name, "imu_accel_debug_body")
 
 
+def base_force_debug_geom_name() -> str:
+    return frame_resource(FRAME_BASE_LINK, "force_debug")
+
+
+def base_force_debug_body_name() -> str:
+    return frame_resource(FRAME_BASE_LINK, "force_debug_body")
+
+
 def _format_values(values: tuple[float, ...]) -> str:
     return " ".join(f"{value:.9g}" for value in values)
 
@@ -90,6 +101,51 @@ def _format_xyz(values: tuple[float, float, float]) -> str:
 
 def _format_quat_wxyz(values: tuple[float, float, float, float]) -> str:
     return _format_values(values)
+
+
+def _quat_conjugate_wxyz(
+    quat_wxyz: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    w, x, y, z = quat_wxyz
+    return (w, -x, -y, -z)
+
+
+def _quat_multiply_wxyz(
+    lhs: tuple[float, float, float, float],
+    rhs: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    lw, lx, ly, lz = lhs
+    rw, rx, ry, rz = rhs
+    return (
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    )
+
+
+def _rotate_vector_by_quat_wxyz(
+    quat_wxyz: tuple[float, float, float, float],
+    vec_xyz: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    vec_quat = (0.0, vec_xyz[0], vec_xyz[1], vec_xyz[2])
+    rotated = _quat_multiply_wxyz(
+        _quat_multiply_wxyz(quat_wxyz, vec_quat),
+        _quat_conjugate_wxyz(quat_wxyz),
+    )
+    return (rotated[1], rotated[2], rotated[3])
+
+
+def _invert_pose(
+    pos_xyz: tuple[float, float, float],
+    quat_wxyz: tuple[float, float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+    quat_inv = _quat_conjugate_wxyz(quat_wxyz)
+    pos_inv = _rotate_vector_by_quat_wxyz(
+        quat_inv,
+        (-pos_xyz[0], -pos_xyz[1], -pos_xyz[2]),
+    )
+    return pos_inv, quat_inv
 
 
 def _coerce_vector3_param(raw_value, param_name: str) -> tuple[float, float, float]:
@@ -255,6 +311,21 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
             "imu_accel_debug_min_length",
             DEFAULT_IMU_ACCEL_DEBUG_MIN_LENGTH,
         ),
+        "base_force_debug_radius": _declare_nonnegative_float_param(
+            node,
+            "base_force_debug_radius",
+            DEFAULT_BASE_FORCE_DEBUG_RADIUS,
+        ),
+        "base_force_debug_scale": _declare_nonnegative_float_param(
+            node,
+            "base_force_debug_scale",
+            DEFAULT_BASE_FORCE_DEBUG_SCALE,
+        ),
+        "base_force_debug_min_length": _declare_nonnegative_float_param(
+            node,
+            "base_force_debug_min_length",
+            DEFAULT_BASE_FORCE_DEBUG_MIN_LENGTH,
+        ),
         "boundary_wall_thickness": _declare_nonnegative_float_param(
             node,
             "boundary_wall_thickness",
@@ -377,6 +448,16 @@ def build_scene_xml(
     left_livox_pose = frame_tree.require_frame(FRAME_LEFT_LIVOX)
     right_livox_pose = frame_tree.require_frame(FRAME_RIGHT_LIVOX)
     base_joint_axis = frame_tree.base_joint_axis
+    gimbal_relative_to_base_pos, gimbal_relative_to_base_quat = _invert_pose(
+        base_link_pose.pos,
+        base_link_pose.quat_wxyz,
+    )
+    base_spawn_pos = (
+        spawn_x + base_link_pose.pos[0],
+        spawn_y + base_link_pose.pos[1],
+        spawn_z + base_link_pose.pos[2],
+    )
+    base_spawn_quat = base_link_pose.quat_wxyz
     collision_dir = os.path.join(meshdir, "mesh_collision_env")
     collision_mesh_files = _list_obj_files(collision_dir)
     view_scene_mesh_rel = "mesh_view/mesh_view.obj"
@@ -435,6 +516,15 @@ def build_scene_xml(
     livox_blocks: list[str] = []
     sensor_blocks: list[str] = []
     debug_blocks: list[str] = []
+    debug_blocks.append(
+        f"""
+      <body name="{base_force_debug_body_name()}" mocap="true" pos="0 0 0" quat="1 0 0 0">
+        <geom name="{base_force_debug_geom_name()}" type="cylinder"
+              size="{_format_values((scene_geometry['base_force_debug_radius'], scene_geometry['base_force_debug_min_length'] / 2.0))}"
+              rgba="0.1 1.0 0.2 0.9" mass="0"
+              contype="0" conaffinity="0" group="1"/>
+      </body>"""
+    )
     for frame_name, enabled, pose in (
         (FRAME_LEFT_LIVOX, enable_left_livox, left_livox_pose),
         (FRAME_RIGHT_LIVOX, enable_right_livox, right_livox_pose),
@@ -512,10 +602,31 @@ def build_scene_xml(
 {collision_geom_xml}
 {boundary_geom_xml}
     </body>{debug_blocks_xml}
-    <body name="{FRAME_GIMBAL}" pos="{spawn_x} {spawn_y} {spawn_z}">
-      <freejoint name="gimbal_freejoint"/>
-      <inertial pos="0 0 0" mass="{gimbal_body_mass}"
-                diaginertia="{_format_xyz(gimbal_body_diaginertia_xyz)}"/>
+    <body name="{FRAME_BASE_LINK}" pos="{_format_xyz(base_spawn_pos)}"
+          quat="{_format_quat_wxyz(base_spawn_quat)}">
+      <freejoint name="base_freejoint"/>
+      <geom name="{frame_resource(FRAME_BASE_LINK, 'origin_debug')}" type="sphere"
+            size="{frame_origin_debug_radius}"
+            material="mat_frame_origin_debug" mass="0"
+            contype="0" conaffinity="0" group="1"/>
+      <geom name="{frame_resource(FRAME_BASE_LINK, 'display')}" type="cylinder"
+            size="{_format_values((base_visual_radius, base_visual_half_height))}"
+            pos="0 0 {base_visual_half_height:.9g}"
+            material="mat_chassis" mass="0"
+            contype="0" conaffinity="0" condim="3"
+            friction="0 0 0" group="1"/>
+      <geom name="{frame_resource(FRAME_BASE_LINK, 'collision')}" type="cylinder"
+            size="{_format_values((base_collision_radius, base_collision_half_height))}"
+            pos="0 0 {base_collision_half_height:.9g}"
+            material="mat_chassis" mass="{base_collision_mass}"
+            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
+            friction="0 0 0" group="1"/>
+      <body name="{FRAME_GIMBAL}" pos="{_format_xyz(gimbal_relative_to_base_pos)}"
+            quat="{_format_quat_wxyz(gimbal_relative_to_base_quat)}">
+        <joint name="{JOINT_GIMBAL_YAW}" type="hinge"
+               axis="{_format_xyz(base_joint_axis)}" damping="0"/>
+        <inertial pos="0 0 0" mass="{gimbal_body_mass}"
+                  diaginertia="{_format_xyz(gimbal_body_diaginertia_xyz)}"/>
       <geom name="{frame_resource(FRAME_GIMBAL, 'origin_debug')}" type="sphere"
             size="{gimbal_origin_debug_radius}"
             material="mat_frame_origin_debug" mass="0"
@@ -538,26 +649,6 @@ def build_scene_xml(
               material="mat_frame_origin_debug" mass="0"
               contype="0" conaffinity="0" group="1"/>
       </body>{livox_blocks_xml}
-      <body name="{FRAME_BASE_LINK}" pos="{_format_xyz(base_link_pose.pos)}"
-            quat="{_format_quat_wxyz(base_link_pose.quat_wxyz)}">
-        <joint name="{JOINT_GIMBAL_YAW}" type="hinge"
-               axis="{_format_xyz(base_joint_axis)}" damping="0"/>
-        <geom name="{frame_resource(FRAME_BASE_LINK, 'origin_debug')}" type="sphere"
-              size="{frame_origin_debug_radius}"
-              material="mat_frame_origin_debug" mass="0"
-              contype="0" conaffinity="0" group="1"/>
-        <geom name="{frame_resource(FRAME_BASE_LINK, 'display')}" type="cylinder"
-              size="{_format_values((base_visual_radius, base_visual_half_height))}"
-              pos="0 0 {base_visual_half_height:.9g}"
-              material="mat_chassis" mass="0"
-              contype="0" conaffinity="0" condim="3"
-              friction="0 0 0" group="1"/>
-        <geom name="{frame_resource(FRAME_BASE_LINK, 'collision')}" type="cylinder"
-              size="{_format_values((base_collision_radius, base_collision_half_height))}"
-              pos="0 0 {base_collision_half_height:.9g}"
-              material="mat_chassis" mass="{base_collision_mass}"
-              contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
-              friction="0 0 0" group="1"/>
       </body>
     </body>
   </worldbody>

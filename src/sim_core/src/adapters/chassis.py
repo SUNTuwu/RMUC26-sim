@@ -21,6 +21,7 @@ class ChassisNode(Node):
         self.declare_parameter("publish_rate", 50.0)
         self.declare_parameter("small_gyro_spin_rate", 6.0)
         self.declare_parameter("small_gyro_toggle_timeout_sec", 1.0)
+        self.declare_parameter("linear_cmd_timeout_sec", 0.5)
 
         self.keyboard_cmd_vel_topic = str(
             self.get_parameter("keyboard_cmd_vel_topic").value
@@ -33,13 +34,19 @@ class ChassisNode(Node):
         self.small_gyro_toggle_timeout_sec = max(
             float(self.get_parameter("small_gyro_toggle_timeout_sec").value), 0.0
         )
+        self.linear_cmd_timeout_sec = max(
+            float(self.get_parameter("linear_cmd_timeout_sec").value),
+            0.0,
+        )
 
         self.target_vx = 0.0
         self.target_vy = 0.0
         self.target_gimbal_wz = 0.0
         self.small_gyro_enabled = False
         self.last_small_gyro_toggle_time = None
+        self.last_linear_cmd_time = None
         self.last_publish_signature = None
+        self.linear_timeout_active = False
 
         self.keyboard_subscription = self.create_subscription(
             Twist,
@@ -56,8 +63,17 @@ class ChassisNode(Node):
             f"publish={self.cmd_vel_out_topic}, "
             f"publish_rate={self.publish_rate:.1f}, "
             f"small_gyro_spin_rate={self.small_gyro_spin_rate:.2f}, "
-            f"small_gyro_toggle_timeout_sec={self.small_gyro_toggle_timeout_sec:.2f}"
+            f"small_gyro_toggle_timeout_sec={self.small_gyro_toggle_timeout_sec:.2f}, "
+            f"linear_cmd_timeout_sec={self.linear_cmd_timeout_sec:.2f}"
         )
+
+    def _linear_command_is_fresh(self) -> bool:
+        if self.last_linear_cmd_time is None:
+            return False
+        if self.linear_cmd_timeout_sec <= 0.0:
+            return True
+        age = (self.get_clock().now() - self.last_linear_cmd_time).nanoseconds / 1e9
+        return age <= self.linear_cmd_timeout_sec
 
     def _can_toggle_small_gyro(self) -> bool:
         if self.small_gyro_toggle_timeout_sec <= 0.0:
@@ -89,6 +105,8 @@ class ChassisNode(Node):
             self.target_vx = float(msg.linear.x)
             self.target_vy = float(msg.linear.y)
             self.target_gimbal_wz = float(msg.angular.z)
+            self.last_linear_cmd_time = self.get_clock().now()
+            self.linear_timeout_active = False
 
         if msg.angular.y > SMALL_GYRO_TOGGLE_THRESHOLD:
             if self._can_toggle_small_gyro():
@@ -102,12 +120,17 @@ class ChassisNode(Node):
 
     def timer_callback(self) -> None:
         msg = Twist()
-        msg.linear.x = self.target_vx
-        msg.linear.y = self.target_vy
+        linear_cmd_is_fresh = self._linear_command_is_fresh()
+        msg.linear.x = self.target_vx if linear_cmd_is_fresh else 0.0
+        msg.linear.y = self.target_vy if linear_cmd_is_fresh else 0.0
         msg.linear.z = 0.0
         msg.angular.x = self.small_gyro_spin_rate if self.small_gyro_enabled else 0.0
         msg.angular.y = 0.0
         msg.angular.z = self.target_gimbal_wz
+
+        if not linear_cmd_is_fresh and not self.linear_timeout_active:
+            self.linear_timeout_active = True
+            self.get_logger().info("linear cmd timeout, zero linear velocity and keep small gyro state")
 
         publish_signature = (
             msg.linear.x,
