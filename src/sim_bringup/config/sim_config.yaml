@@ -1,7 +1,8 @@
 keyboard_test:
   ros__parameters:
     cmd_vel_topic: /sim/keyboard/cmd_vel
-    linear_speed: 5.0
+    focus_topic: /sim/focus
+    linear_speed: 3.0
     gimbal_yaw_speed: 10.0
     tty_device: /dev/tty
     tty_key_timeout_sec: 0.3
@@ -18,7 +19,7 @@ chassis_adapter:
 imu_adapter:
   ros__parameters:
     imu_ips: ["192.168.10.4", "192.168.10.5"]
-    imu_low_pass_cutoff_hz: 30.0
+    imu_low_pass_cutoff_hz: 60.0
 
 sentry_sim_node:
   ros__parameters:
@@ -27,9 +28,16 @@ sentry_sim_node:
     imu_rate: 500.0
 
     # Viewer Camera Config
-    viewer_camera_distance: 3.0
+    viewer_camera_distance: 10.0
     viewer_camera_azimuth: 135.0
-    viewer_camera_elevation: -25.0
+    viewer_camera_elevation: -40.0
+    viewer_focus_topic: /sim/focus
+    viewer_focus_on_start: true
+    viewer_focus_yaw_offset_deg: 0.0
+    viewer_focus_smoothing_time_sec: 0.5
+    viewer_manual_camera_timeout_sec: 1.0
+    viewer_manual_camera_position_epsilon: 0.00001
+    viewer_manual_camera_angle_epsilon_deg: 0.001
 
     left_lidar_ip: 192.168.10.4
     right_lidar_ip: 192.168.10.5

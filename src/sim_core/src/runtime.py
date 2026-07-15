@@ -11,6 +11,7 @@ import mujoco
 import numpy as np
 import rclpy
 import rosgraph_msgs.msg
+import std_msgs.msg
 from rclpy.node import Node
 
 from .component_manager import ComponentManager
@@ -46,6 +47,13 @@ DEFAULT_ROBOT_INIT_LOCATION = (0.0, 0.0, 10.0)
 DEFAULT_VIEWER_CAMERA_DISTANCE = 3.0
 DEFAULT_VIEWER_CAMERA_AZIMUTH = 135.0
 DEFAULT_VIEWER_CAMERA_ELEVATION = -25.0
+DEFAULT_VIEWER_FOCUS_TOPIC = "/sim/focus"
+DEFAULT_VIEWER_FOCUS_ON_START = True
+DEFAULT_VIEWER_FOCUS_YAW_OFFSET_DEG = 45.0
+DEFAULT_VIEWER_FOCUS_SMOOTHING_TIME_SEC = 0.5
+DEFAULT_VIEWER_MANUAL_CAMERA_TIMEOUT_SEC = 1.0
+DEFAULT_VIEWER_MANUAL_CAMERA_POSITION_EPSILON = 1e-5
+DEFAULT_VIEWER_MANUAL_CAMERA_ANGLE_EPSILON_DEG = 1e-3
 
 
 def _coerce_vector3_param(raw_value, param_name: str) -> tuple[float, float, float]:
@@ -56,6 +64,11 @@ def _coerce_vector3_param(raw_value, param_name: str) -> tuple[float, float, flo
 
 def wrap_to_pi(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def interpolate_angle_degrees(current: float, target: float, alpha: float) -> float:
+    delta = (target - current + 180.0) % 360.0 - 180.0
+    return current + alpha * delta
 
 
 def normalize_vector(vec: np.ndarray, eps: float = 1e-9) -> np.ndarray | None:
@@ -120,6 +133,58 @@ class SimulationRuntime:
                 DEFAULT_VIEWER_CAMERA_ELEVATION,
             ).value
         )
+        self.viewer_focus_topic = str(
+            node.declare_parameter(
+                "viewer_focus_topic",
+                DEFAULT_VIEWER_FOCUS_TOPIC,
+            ).value
+        ).strip()
+        if not self.viewer_focus_topic:
+            raise ValueError("viewer_focus_topic must not be empty")
+        self.viewer_focus_on_start = bool(
+            node.declare_parameter(
+                "viewer_focus_on_start",
+                DEFAULT_VIEWER_FOCUS_ON_START,
+            ).value
+        )
+        self.viewer_focus_yaw_offset_deg = float(
+            node.declare_parameter(
+                "viewer_focus_yaw_offset_deg",
+                DEFAULT_VIEWER_FOCUS_YAW_OFFSET_DEG,
+            ).value
+        )
+        self.viewer_focus_smoothing_time_sec = float(
+            node.declare_parameter(
+                "viewer_focus_smoothing_time_sec",
+                DEFAULT_VIEWER_FOCUS_SMOOTHING_TIME_SEC,
+            ).value
+        )
+        if self.viewer_focus_smoothing_time_sec <= 0.0:
+            raise ValueError("viewer_focus_smoothing_time_sec must be positive")
+        self.viewer_manual_camera_timeout_sec = float(
+            node.declare_parameter(
+                "viewer_manual_camera_timeout_sec",
+                DEFAULT_VIEWER_MANUAL_CAMERA_TIMEOUT_SEC,
+            ).value
+        )
+        if self.viewer_manual_camera_timeout_sec <= 0.0:
+            raise ValueError("viewer_manual_camera_timeout_sec must be positive")
+        self.viewer_manual_camera_position_epsilon = float(
+            node.declare_parameter(
+                "viewer_manual_camera_position_epsilon",
+                DEFAULT_VIEWER_MANUAL_CAMERA_POSITION_EPSILON,
+            ).value
+        )
+        if self.viewer_manual_camera_position_epsilon <= 0.0:
+            raise ValueError("viewer_manual_camera_position_epsilon must be positive")
+        self.viewer_manual_camera_angle_epsilon_deg = float(
+            node.declare_parameter(
+                "viewer_manual_camera_angle_epsilon_deg",
+                DEFAULT_VIEWER_MANUAL_CAMERA_ANGLE_EPSILON_DEG,
+            ).value
+        )
+        if self.viewer_manual_camera_angle_epsilon_deg <= 0.0:
+            raise ValueError("viewer_manual_camera_angle_epsilon_deg must be positive")
         self.scene_geometry = scene_geometry
         self.enabled_livox_frames = list(enabled_livox_frames)
         self.model = mujoco.MjModel.from_xml_string(scene_xml)
@@ -127,6 +192,15 @@ class SimulationRuntime:
         self.viewer = None
         self._viewer_import = None
         self._viewer_sync_failed = False
+        self._viewer_focus_state_lock = threading.Lock()
+        self._viewer_focus_requested = self.viewer_focus_on_start
+        self._viewer_focus_applied = self.viewer_focus_on_start
+        self._viewer_focus_control_active = self.viewer_focus_on_start
+        self._viewer_focus_release_remaining_sec = 0.0
+        self._viewer_manual_control_active = False
+        self._viewer_manual_last_motion_time = 0.0
+        self._viewer_camera_expected_state = None
+        self._viewer_camera_observed_state = None
         self.running = False
         self.physics_lock = threading.Lock()
         self.physics_thread = None
@@ -171,6 +245,12 @@ class SimulationRuntime:
         self.livox_handles: dict[str, dict[str, int]] = {}
         for frame_name in self.enabled_livox_frames:
             self.livox_handles[frame_name] = self._bind_livox_frame(frame_name)
+        self.viewer_focus_sub = node.create_subscription(
+            std_msgs.msg.Bool,
+            self.viewer_focus_topic,
+            self._on_viewer_focus_command,
+            10,
+        )
         mujoco.mj_forward(self.model, self.data)
         self._initialize_odom_reference_locked()
         self._start_viewer_if_requested()
@@ -215,6 +295,17 @@ class SimulationRuntime:
 
     def set_control_provider(self, control_provider) -> None:
         self.control_provider = control_provider
+
+    def _on_viewer_focus_command(self, msg: std_msgs.msg.Bool) -> None:
+        if not msg.data:
+            return
+        with self._viewer_focus_state_lock:
+            self._viewer_focus_requested = not self._viewer_focus_requested
+            focus_enabled = self._viewer_focus_requested
+        state = "enabled" if focus_enabled else "disabled"
+        self.node.get_logger().info(
+            f"Viewer focus {state} by {self.viewer_focus_topic}"
+        )
 
     def make_lidar_args(self) -> dict[str, object]:
         return {
@@ -263,15 +354,18 @@ class SimulationRuntime:
                 self.viewer.opt.geomgroup[0] = 0
                 self.viewer.opt.geomgroup[2] = 0
                 self.viewer.opt.geomgroup[3] = 0
-                self.viewer.cam.type = int(mujoco.mjtCamera.mjCAMERA_TRACKING)
-                self.viewer.cam.trackbodyid = self.base_body_id
+                self.viewer.cam.type = int(mujoco.mjtCamera.mjCAMERA_FREE)
+                self.viewer.cam.trackbodyid = -1
                 self.viewer.cam.fixedcamid = -1
-                self.viewer.cam.lookat[:] = self.data.xpos[self.base_body_id]
+                self.viewer.cam.lookat[:] = self.data.xpos[self.gimbal_body_id]
                 self.viewer.cam.distance = self.viewer_camera_distance
                 self.viewer.cam.azimuth = self.viewer_camera_azimuth
                 self.viewer.cam.elevation = self.viewer_camera_elevation
+                initial_camera_state = self._capture_viewer_camera_state_locked()
+                self._viewer_camera_expected_state = initial_camera_state
+                self._viewer_camera_observed_state = initial_camera_state
             self.node.get_logger().info(
-                "MuJoCo viewer launched and focused on base_link. geom groups: "
+                "MuJoCo viewer launched and aimed at main_gimbal_link. geom groups: "
                 "render=on, lidar_trace=off, collision_debug=off, lidar_debug=off."
             )
         except Exception as exc:
@@ -279,6 +373,145 @@ class SimulationRuntime:
             self.node.get_logger().warn(
                 f"Failed to launch MuJoCo viewer: {type(exc).__name__}: {exc}"
             )
+
+    def _capture_viewer_camera_state_locked(
+        self,
+    ) -> tuple[np.ndarray, tuple[int, int, int]]:
+        camera = self.viewer.cam
+        values = np.array(
+            [
+                *camera.lookat,
+                camera.distance,
+                camera.azimuth,
+                camera.elevation,
+            ],
+            dtype=np.float64,
+        )
+        mode = (
+            int(camera.type),
+            int(camera.trackbodyid),
+            int(camera.fixedcamid),
+        )
+        return values, mode
+
+    def _viewer_camera_state_changed(
+        self,
+        previous: tuple[np.ndarray, tuple[int, int, int]] | None,
+        current: tuple[np.ndarray, tuple[int, int, int]],
+    ) -> bool:
+        if previous is None:
+            return False
+        previous_values, previous_mode = previous
+        current_values, current_mode = current
+        if previous_mode != current_mode:
+            return True
+        position_delta = np.abs(current_values[:4] - previous_values[:4])
+        if np.any(position_delta > self.viewer_manual_camera_position_epsilon):
+            return True
+        azimuth_delta = abs(
+            (current_values[4] - previous_values[4] + 180.0) % 360.0 - 180.0
+        )
+        elevation_delta = abs(current_values[5] - previous_values[5])
+        return (
+            azimuth_delta > self.viewer_manual_camera_angle_epsilon_deg
+            or elevation_delta > self.viewer_manual_camera_angle_epsilon_deg
+        )
+
+    def _update_viewer_focus_locked(self) -> None:
+        with self._viewer_focus_state_lock:
+            focus_requested = self._viewer_focus_requested
+
+        camera_state = self._capture_viewer_camera_state_locked()
+
+        if focus_requested != self._viewer_focus_applied:
+            self._viewer_focus_applied = focus_requested
+            self._viewer_manual_control_active = False
+            self._viewer_camera_expected_state = camera_state
+            self._viewer_camera_observed_state = camera_state
+            if focus_requested:
+                self._viewer_focus_control_active = True
+                self._viewer_focus_release_remaining_sec = 0.0
+            elif self._viewer_focus_control_active:
+                self._viewer_focus_release_remaining_sec = (
+                    self.viewer_focus_smoothing_time_sec
+                )
+
+        if not self._viewer_focus_control_active:
+            return
+
+        if focus_requested:
+            now = time.monotonic()
+            if self._viewer_manual_control_active:
+                if self._viewer_camera_state_changed(
+                    self._viewer_camera_observed_state,
+                    camera_state,
+                ):
+                    self._viewer_camera_observed_state = camera_state
+                    self._viewer_manual_last_motion_time = now
+                elif (
+                    now - self._viewer_manual_last_motion_time
+                    >= self.viewer_manual_camera_timeout_sec
+                ):
+                    self._viewer_manual_control_active = False
+                    self._viewer_camera_expected_state = camera_state
+                    self.node.get_logger().info(
+                        "Manual viewer camera control ended; resuming focus."
+                    )
+                if self._viewer_manual_control_active:
+                    return
+            elif self._viewer_camera_state_changed(
+                self._viewer_camera_expected_state,
+                camera_state,
+            ):
+                self._viewer_manual_control_active = True
+                self._viewer_manual_last_motion_time = now
+                self._viewer_camera_observed_state = camera_state
+                self.node.get_logger().info(
+                    "Manual viewer camera control detected; focus paused."
+                )
+                return
+
+        follow_weight = 1.0
+        if not focus_requested:
+            follow_weight = (
+                self._viewer_focus_release_remaining_sec
+                / self.viewer_focus_smoothing_time_sec
+            )
+            if follow_weight <= 0.0:
+                self._viewer_focus_control_active = False
+                return
+            self._viewer_focus_release_remaining_sec = max(
+                self._viewer_focus_release_remaining_sec - self.physics_dt,
+                0.0,
+            )
+            follow_weight = follow_weight * follow_weight * (3.0 - 2.0 * follow_weight)
+
+        alpha = (
+            1.0 - math.exp(-self.physics_dt / self.viewer_focus_smoothing_time_sec)
+        ) * follow_weight
+        gimbal_pos = self.data.xpos[self.gimbal_body_id]
+        gimbal_rot = self.data.xmat[self.gimbal_body_id].reshape(3, 3)
+        gimbal_yaw_deg = math.degrees(
+            math.atan2(float(gimbal_rot[1, 0]), float(gimbal_rot[0, 0]))
+        )
+        desired_azimuth = gimbal_yaw_deg + self.viewer_focus_yaw_offset_deg
+
+        camera = self.viewer.cam
+        camera.type = int(mujoco.mjtCamera.mjCAMERA_FREE)
+        camera.trackbodyid = -1
+        camera.fixedcamid = -1
+        camera.lookat[:] += alpha * (gimbal_pos - camera.lookat)
+        camera.distance += alpha * (self.viewer_camera_distance - camera.distance)
+        camera.azimuth = interpolate_angle_degrees(
+            camera.azimuth,
+            desired_azimuth,
+            alpha,
+        )
+        camera.elevation += alpha * (
+            self.viewer_camera_elevation - camera.elevation
+        )
+        self._viewer_camera_expected_state = self._capture_viewer_camera_state_locked()
+        self._viewer_camera_observed_state = self._viewer_camera_expected_state
 
     def _sync_viewer(self) -> None:
         if self.viewer is None:
@@ -288,6 +521,8 @@ class SimulationRuntime:
             self.node.get_logger().warn("MuJoCo viewer closed; continuing headless.")
             return
         try:
+            with self.viewer.lock():
+                self._update_viewer_focus_locked()
             self.viewer.sync()
         except Exception as exc:
             if not self._viewer_sync_failed:

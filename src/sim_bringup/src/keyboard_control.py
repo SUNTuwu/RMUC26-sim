@@ -14,6 +14,7 @@ import termios
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from std_msgs.msg import Bool
 
 try:
     from pynput import keyboard as pynput_keyboard
@@ -117,12 +118,16 @@ class KeyboardTestNode(Node):
     def __init__(self) -> None:
         super().__init__("keyboard_test")
         self.declare_parameter("cmd_vel_topic", "/sim/keyboard/cmd_vel")
+        self.declare_parameter("focus_topic", "/sim/focus")
         self.declare_parameter("linear_speed", 1.0)
         self.declare_parameter("gimbal_yaw_speed", 1.5)
         self.declare_parameter("tty_device", "/dev/tty")
         self.declare_parameter("tty_key_timeout_sec", 0.5)
 
         self.cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
+        self.focus_topic = str(self.get_parameter("focus_topic").value).strip()
+        if not self.focus_topic:
+            raise ValueError("focus_topic must not be empty")
         self.linear_speed = float(self.get_parameter("linear_speed").value)
         self.gimbal_yaw_speed = float(self.get_parameter("gimbal_yaw_speed").value)
         self.tty_device = str(self.get_parameter("tty_device").value)
@@ -131,13 +136,16 @@ class KeyboardTestNode(Node):
             raise ValueError("tty_key_timeout_sec must be positive")
 
         self.publisher = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.focus_publisher = self.create_publisher(Bool, self.focus_topic, 10)
         self._listener = None
         self._tty_reader = None
         self._tty_release_timer = None
+        self._tty_focus_release_timer = None
         self._last_tty_publish_time = float("-inf")
         self._state_lock = threading.Lock()
         self._active_keys: set[str] = set()
         self._pressed_space = False
+        self._pressed_focus = False
         self._destroyed = False
         self._hold_repeat_timer = self.create_timer(
             self.tty_key_timeout_sec,
@@ -169,7 +177,8 @@ class KeyboardTestNode(Node):
         self.get_logger().info(
             "keyboard_test ready: event-driven publish to "
             f"{self.cmd_vel_topic}, input={input_mode}, WASD=translation, "
-            "up/down=forward/backward, left/right=gimbal yaw, space=toggle small gyro, q=quit."
+            "up/down=forward/backward, left/right=gimbal yaw, space=toggle small gyro, "
+            "f=toggle viewer focus, q=quit."
         )
 
     def _activate_direction_key_locked(self, logical_key: str) -> bool:
@@ -248,6 +257,10 @@ class KeyboardTestNode(Node):
             f"angular=({msg.angular.x:.2f}, {msg.angular.y:.2f}, {msg.angular.z:.2f})"
         )
 
+    def _publish_focus_toggle(self) -> None:
+        self.focus_publisher.publish(Bool(data=True))
+        self.get_logger().info(f"press f: toggle viewer focus on {self.focus_topic}")
+
     def _request_shutdown(self) -> bool:
         self.get_logger().info("quit requested from keyboard")
         self.destroy_node()
@@ -270,6 +283,24 @@ class KeyboardTestNode(Node):
         if previous_timer is not None:
             previous_timer.cancel()
         timer.start()
+
+    def _arm_tty_focus_release_timer(self) -> None:
+        timer = threading.Timer(
+            self.tty_key_timeout_sec,
+            self._on_tty_focus_timeout,
+        )
+        timer.daemon = True
+        with self._state_lock:
+            previous_timer = self._tty_focus_release_timer
+            self._tty_focus_release_timer = timer
+        if previous_timer is not None:
+            previous_timer.cancel()
+        timer.start()
+
+    def _on_tty_focus_timeout(self) -> None:
+        with self._state_lock:
+            self._pressed_focus = False
+            self._tty_focus_release_timer = None
 
     def _on_tty_timeout(self) -> None:
         with self._state_lock:
@@ -294,6 +325,16 @@ class KeyboardTestNode(Node):
             return self._request_shutdown()
         if logical_key == "space":
             self._publish_toggle_only_command("press space")
+            return True
+        if logical_key == "f":
+            with self._state_lock:
+                if self._destroyed:
+                    return False
+                first_press = not self._pressed_focus
+                self._pressed_focus = True
+            self._arm_tty_focus_release_timer()
+            if first_press:
+                self._publish_focus_toggle()
             return True
 
         now = time.monotonic()
@@ -330,6 +371,13 @@ class KeyboardTestNode(Node):
                 self._pressed_space = True
             self._publish_toggle_only_command("press space")
             return
+        if logical_key == "f":
+            with self._state_lock:
+                if self._pressed_focus:
+                    return
+                self._pressed_focus = True
+            self._publish_focus_toggle()
+            return
 
         with self._state_lock:
             state_changed = self._activate_direction_key_locked(logical_key)
@@ -345,6 +393,10 @@ class KeyboardTestNode(Node):
         if logical_key == "space":
             with self._state_lock:
                 self._pressed_space = False
+            return
+        if logical_key == "f":
+            with self._state_lock:
+                self._pressed_focus = False
             return
 
         with self._state_lock:
@@ -371,6 +423,9 @@ class KeyboardTestNode(Node):
             self._tty_reader = None
         self._hold_repeat_timer.cancel()
         self._cancel_tty_release_timer()
+        if self._tty_focus_release_timer is not None:
+            self._tty_focus_release_timer.cancel()
+            self._tty_focus_release_timer = None
         super().destroy_node()
 
 
