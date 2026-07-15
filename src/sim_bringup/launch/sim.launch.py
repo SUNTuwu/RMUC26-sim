@@ -115,10 +115,25 @@ def generate_launch_description():
         value_type=str,
     )
 
-    chassis_node = Node(
+    chassis_adapter_node = Node(
         package="sim_core",
-        executable="chassis",
-        name="chassis",
+        executable="chassis_adapter",
+        name="chassis_adapter",
+        prefix=python_prefix,
+        parameters=[
+            sim_config_file,
+            {
+                "use_sim_time": use_sim_time,
+            },
+        ],
+        output="screen",
+        emulate_tty=True,
+    )
+
+    imu_adapter_node = Node(
+        package="sim_core",
+        executable="imu_adapter",
+        name="imu_adapter",
         prefix=python_prefix,
         parameters=[
             sim_config_file,
@@ -165,7 +180,8 @@ def generate_launch_description():
     all_systems = LaunchDescription(
         [
             declare_parameters,
-            chassis_node,
+            chassis_adapter_node,
+            imu_adapter_node,
             robot_state_publisher_node,
             sim_core_node,
         ]

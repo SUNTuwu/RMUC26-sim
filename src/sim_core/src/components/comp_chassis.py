@@ -3,6 +3,9 @@ from __future__ import annotations
 import numpy as np
 
 
+DEFAULT_CMD_VEL_TOPIC = "/sim/cmd_vel"
+
+
 def _slew_rate_limit_vector(
     current: np.ndarray,
     target: np.ndarray,

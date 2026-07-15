@@ -111,11 +111,11 @@ class _TtyKeyReader:
 
 
 class KeyboardTestNode(Node):
-    """Publishes `/cmd_vel_keyboard` only on keyboard state changes."""
+    """Publish raw simulator keyboard commands only on state changes."""
 
     def __init__(self) -> None:
         super().__init__("keyboard_test")
-        self.declare_parameter("cmd_vel_topic", "/cmd_vel_keyboard")
+        self.declare_parameter("cmd_vel_topic", "/sim/keyboard/cmd_vel")
         self.declare_parameter("linear_speed", 1.0)
         self.declare_parameter("gimbal_yaw_speed", 1.5)
         self.declare_parameter("tty_device", "/dev/tty")

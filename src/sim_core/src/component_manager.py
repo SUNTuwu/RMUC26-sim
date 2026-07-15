@@ -3,7 +3,7 @@ from __future__ import annotations
 import geometry_msgs.msg
 import sensor_msgs.msg
 
-from .components.comp_chassis import ChassisComponent
+from .components.comp_chassis import ChassisComponent, DEFAULT_CMD_VEL_TOPIC
 from .components.comp_gimbal import GimbalComponent
 from .components.comp_livox import (
     DEFAULT_IMU_RATE,
@@ -25,7 +25,10 @@ class ComponentManager:
         self.cmd_vel_timeout_sec = 0.0
         self.active_cmd_source = "idle"
         self.chassis_cmd_vel_topic = str(
-            node.declare_parameter("chassis_cmd_vel_topic", "/cmd_vel_chassis").value
+            node.declare_parameter(
+                "chassis_cmd_vel_topic",
+                DEFAULT_CMD_VEL_TOPIC,
+            ).value
         )
         self.cmd_vel_timeout_sec = max(
             float(node.declare_parameter("cmd_vel_timeout_sec", 0.5).value),

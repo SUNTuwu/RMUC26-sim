@@ -398,7 +398,6 @@ class SimulationRuntime:
             return stamp, float(self.gimbal_joint_pos), float(self.gimbal_joint_vel)
 
     def physics_loop(self) -> None:
-        last_clock_ns = 0
         while self.running and rclpy.ok():
             current_sim_time_ns = self.latest_sim_time_ns
             with self.physics_lock:
@@ -468,11 +467,9 @@ class SimulationRuntime:
                 current_sim_time_ns = self._sim_time_ns_locked()
                 self.latest_sim_time_ns = current_sim_time_ns
                 self._sync_viewer()
-            if current_sim_time_ns - last_clock_ns >= 10_000_000:
-                msg = rosgraph_msgs.msg.Clock()
-                msg.clock = self._stamp_from_ns(current_sim_time_ns)
-                self.clock_pub.publish(msg)
-                last_clock_ns = current_sim_time_ns
+            msg = rosgraph_msgs.msg.Clock()
+            msg.clock = self._stamp_from_ns(current_sim_time_ns)
+            self.clock_pub.publish(msg)
             time.sleep(self.physics_dt)
 
 
@@ -557,11 +554,19 @@ class SentrySimNode(Node):
             scene_geometry=scene_geometry,
         )
         self.component_manager = ComponentManager(self, self.runtime)
+        physics_rate = 1.0 / physics_dt
+        imu_rate = float(self.get_parameter("imu_rate").value)
+        if imu_rate > physics_rate:
+            raise ValueError(
+                f"imu_rate ({imu_rate:.1f} Hz) must not exceed the physics and /clock "
+                f"rate ({physics_rate:.1f} Hz)"
+            )
         self.runtime.set_control_provider(self.component_manager.compute_control_action)
         self.runtime.start()
         self.get_logger().info(
             f"sentry_sim_node ready: enable_left_livox={enable_left_livox}, "
             f"enable_right_livox={enable_right_livox}, physics_dt={physics_dt:.4f}, "
+            f"clock_rate={physics_rate:.1f}, imu_rate={imu_rate:.1f}, "
             f"robot_init_location={list(robot_init_location)}, "
             f"boundary_x=[{boundary_x_min:.2f}, {boundary_x_max:.2f}], "
             f"boundary_y=[{boundary_y_min:.2f}, {boundary_y_max:.2f}]"

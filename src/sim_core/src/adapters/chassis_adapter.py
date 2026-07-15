@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal keyboard-driven chassis command publisher for sentry_sim."""
+"""Adapt keyboard commands to the simulator chassis command topic."""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ SMALL_GYRO_TOGGLE_THRESHOLD = 0.5
 ZERO_EPSILON = 1e-6
 
 
-class ChassisNode(Node):
-    """Maintains small gyro state and republishes unified `/cmd_vel_chassis`."""
+class ChassisAdapter(Node):
+    """Maintain small-gyro state and publish normalized simulator commands."""
 
     def __init__(self) -> None:
-        super().__init__("chassis")
-        self.declare_parameter("keyboard_cmd_vel_topic", "/cmd_vel_keyboard")
-        self.declare_parameter("cmd_vel_out_topic", "/cmd_vel_chassis")
+        super().__init__("chassis_adapter")
+        self.declare_parameter("keyboard_cmd_vel_topic", "/sim/keyboard/cmd_vel")
+        self.declare_parameter("cmd_vel_out_topic", "/sim/cmd_vel")
         self.declare_parameter("publish_rate", 50.0)
         self.declare_parameter("small_gyro_spin_rate", 6.0)
         self.declare_parameter("small_gyro_toggle_timeout_sec", 1.0)
@@ -58,7 +58,7 @@ class ChassisNode(Node):
         self.timer = self.create_timer(1.0 / self.publish_rate, self.timer_callback)
 
         self.get_logger().info(
-            "chassis ready: "
+            "chassis_adapter ready: "
             f"keyboard={self.keyboard_cmd_vel_topic}, "
             f"publish={self.cmd_vel_out_topic}, "
             f"publish_rate={self.publish_rate:.1f}, "
@@ -130,7 +130,9 @@ class ChassisNode(Node):
 
         if not linear_cmd_is_fresh and not self.linear_timeout_active:
             self.linear_timeout_active = True
-            self.get_logger().info("linear cmd timeout, zero linear velocity and keep small gyro state")
+            self.get_logger().info(
+                "linear cmd timeout, zero linear velocity and keep small gyro state"
+            )
 
         publish_signature = (
             msg.linear.x,
@@ -144,14 +146,15 @@ class ChassisNode(Node):
         if publish_signature != self.last_publish_signature:
             self.last_publish_signature = publish_signature
             self.get_logger().info(
-                f"published cmd_vel_chassis: linear=({msg.linear.x:.2f}, {msg.linear.y:.2f}, {msg.linear.z:.2f}), "
+                "published simulator command: "
+                f"linear=({msg.linear.x:.2f}, {msg.linear.y:.2f}, {msg.linear.z:.2f}), "
                 f"angular=({msg.angular.x:.2f}, {msg.angular.y:.2f}, {msg.angular.z:.2f})"
             )
 
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = ChassisNode()
+    node = ChassisAdapter()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

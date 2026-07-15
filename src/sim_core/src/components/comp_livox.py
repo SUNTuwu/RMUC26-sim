@@ -24,7 +24,7 @@ from ..scene_builder import livox_lidar_site_name
 
 
 DEFAULT_LIDAR_RATE = 10.0
-DEFAULT_IMU_RATE = 200.0
+DEFAULT_IMU_RATE = 500.0
 DEFAULT_LIDAR_CUTOFF = 30.0
 DEFAULT_MID360_POINTS_PER_SCAN = 4032
 GRAVITY_M_S2 = 9.81
@@ -129,8 +129,8 @@ def lidar_pointcloud2_topic_from_ip(ip_address: str) -> str:
     return f"{lidar_pointcloud_topic_from_ip(ip_address)}/pointcloud"
 
 
-def lidar_imu_topic_from_ip(ip_address: str) -> str:
-    return f"/livox/imu_{ip_address.replace('.', '_')}"
+def simulator_imu_topic_from_ip(ip_address: str) -> str:
+    return f"/sim/imu_{ip_address.replace('.', '_')}"
 
 
 class LivoxComponent:
@@ -184,7 +184,7 @@ class LivoxComponent:
         )
         self.imu_pub = node.create_publisher(
             sensor_msgs.msg.Imu,
-            lidar_imu_topic_from_ip(ip_address),
+            simulator_imu_topic_from_ip(ip_address),
             sensor_qos,
         )
         self.generator = LivoxGenerator("mid360")
@@ -202,7 +202,7 @@ class LivoxComponent:
             f"LivoxComponent ready: frame={self.frame_name}, ip={self.ip_address}, "
             f"custom_topic={lidar_pointcloud_topic_from_ip(ip_address)}, "
             f"pointcloud2_topic={lidar_pointcloud2_topic_from_ip(ip_address)}, "
-            f"imu_topic={lidar_imu_topic_from_ip(ip_address)}, "
+            f"imu_topic={simulator_imu_topic_from_ip(ip_address)}, "
             f"lidar_rate={self.lidar_rate:.1f}, imu_rate={self.imu_rate:.1f}, "
             f"points_per_scan={self.mid360_points_per_scan}, qos=reliable"
         )
@@ -288,7 +288,7 @@ class LivoxComponent:
                     "iteration": int(self._publish_debug_counter),
                     "custom_topic": lidar_pointcloud_topic_from_ip(self.ip_address),
                     "pointcloud2_topic": lidar_pointcloud2_topic_from_ip(self.ip_address),
-                    "imu_topic": lidar_imu_topic_from_ip(self.ip_address),
+                    "imu_topic": simulator_imu_topic_from_ip(self.ip_address),
                     "point_num": int(custom_msg.point_num),
                     "pc2_width": int(pc2_msg.width),
                     "custom_subscribers": int(self.pc_pub.get_subscription_count()),

@@ -1,4 +1,5 @@
 __all__ = [
-    "chassis",
+    "chassis_adapter",
+    "imu_adapter",
     "nav_feedback_adapter",
 ]

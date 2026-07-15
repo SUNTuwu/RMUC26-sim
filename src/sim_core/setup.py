@@ -35,7 +35,8 @@ setup(
     entry_points={
         "console_scripts": [
             "sentry_sim_node = sim_core.runtime:main",
-            "chassis = sim_core.adapters.chassis:main",
+            "chassis_adapter = sim_core.adapters.chassis_adapter:main",
+            "imu_adapter = sim_core.adapters.imu_adapter:main",
             "nav_feedback_adapter = sim_core.adapters.nav_feedback_adapter:main",
         ],
     },
