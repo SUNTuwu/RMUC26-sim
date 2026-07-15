@@ -22,9 +22,14 @@ imu_adapter:
 
 sentry_sim_node:
   ros__parameters:
-    robot_init_location: [-4.0,-4.0,0.5]
+    robot_init_location: [-4.0,-4.0,0.4]
     physics_dt: 0.002 # /clock follows every physics step: 500 Hz
     imu_rate: 500.0
+
+    # Viewer Camera Config
+    viewer_camera_distance: 3.0
+    viewer_camera_azimuth: 135.0
+    viewer_camera_elevation: -25.0
 
     left_lidar_ip: 192.168.10.4
     right_lidar_ip: 192.168.10.5
@@ -51,6 +56,8 @@ sentry_sim_node:
     base_direction_arrow_length: 0.35
     gimbal_direction_arrow_length: 0.25
     direction_arrow_radius: 0.01
+    base_direction_arrow_rgba: [1.0, 0.5, 0.0, 1.0] # orange
+    gimbal_direction_arrow_rgba: [1.0, 0.05, 0.05, 1.0] # red
     livox_visual_radius: 0.035
     livox_visual_height: 0.05
     livox_body_mass: 0.265
@@ -69,25 +76,27 @@ sentry_sim_node:
     base_force_debug_min_length: 0.05
     boundary_wall_thickness: 0.05
     boundary_wall_height: 1.2
-    
+
     chassis_cmd_vel_topic: /sim/cmd_vel
     cmd_vel_timeout_sec: 0.5
 
-    chassis_linear_accel_limit: 8.0
-    chassis_velocity_p_gain: 180.0
+    # Chassis PD Control
+    chassis_linear_accel_limit: 30.0
+    chassis_velocity_p_gain: 200.0
     chassis_velocity_d_gain: 10.0
-    chassis_max_force: 250.0
-
-    chassis_angular_accel_limit: 10.0
+    chassis_max_force: 500.0
+    chassis_angular_accel_limit: 20.0
     chassis_angular_velocity_p_gain: 12.0
-    chassis_angular_velocity_d_gain: 0.1
-    chassis_max_torque: 30.0
+    chassis_angular_velocity_d_gain: 0.5
+    chassis_max_torque: 50.0
 
-    gimbal_angular_accel_limit: 10.0
-    gimbal_angular_velocity_p_gain: 0.6
-    gimbal_angular_velocity_d_gain: 0.005
-    gimbal_max_torque: 1.5
+    # Gimbal PD Control
+    gimbal_angular_accel_limit: 20.0
+    gimbal_angular_velocity_p_gain: 10.0
+    gimbal_angular_velocity_d_gain: 0.01
+    gimbal_max_torque: 10.0
 
+    #Arena Boundary
     boundary_x_min: -13.6
     boundary_x_max: 13.6
     boundary_y_min: -7.0

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import select
 import threading
+import time
 import tty
 
 import termios
@@ -111,7 +112,7 @@ class _TtyKeyReader:
 
 
 class KeyboardTestNode(Node):
-    """Publish raw simulator keyboard commands only on state changes."""
+    """Publish keyboard state changes and bounded-rate hold refreshes."""
 
     def __init__(self) -> None:
         super().__init__("keyboard_test")
@@ -133,10 +134,16 @@ class KeyboardTestNode(Node):
         self._listener = None
         self._tty_reader = None
         self._tty_release_timer = None
+        self._last_tty_publish_time = float("-inf")
         self._state_lock = threading.Lock()
         self._active_keys: set[str] = set()
         self._pressed_space = False
         self._destroyed = False
+        self._hold_repeat_timer = self.create_timer(
+            self.tty_key_timeout_sec,
+            self._on_hold_repeat_timeout,
+        )
+        self._hold_repeat_timer.cancel()
 
         if pynput_keyboard is not None:
             self._listener = pynput_keyboard.Listener(
@@ -274,6 +281,14 @@ class KeyboardTestNode(Node):
             self._tty_release_timer = None
         self._publish_current_command(f"release {logical_key}")
 
+    def _on_hold_repeat_timeout(self) -> None:
+        with self._state_lock:
+            if self._destroyed or not self._active_keys:
+                self._hold_repeat_timer.cancel()
+                return
+            held_keys = "+".join(sorted(self._active_keys))
+        self._publish_current_command(f"hold {held_keys}")
+
     def _on_tty_key(self, logical_key: str) -> bool | None:
         if logical_key == "q":
             return self._request_shutdown()
@@ -281,14 +296,23 @@ class KeyboardTestNode(Node):
             self._publish_toggle_only_command("press space")
             return True
 
+        now = time.monotonic()
         with self._state_lock:
             if self._destroyed:
                 return False
+            previous_keys = set(self._active_keys)
             self._active_keys.clear()
-            state_changed = self._activate_direction_key_locked(logical_key)
+            self._activate_direction_key_locked(logical_key)
+            state_changed = self._active_keys != previous_keys
+            timeout_elapsed = (
+                now - self._last_tty_publish_time >= self.tty_key_timeout_sec
+            )
+            should_publish = state_changed or timeout_elapsed
+            if should_publish:
+                self._last_tty_publish_time = now
 
         self._arm_tty_release_timer()
-        if state_changed:
+        if should_publish:
             self._publish_current_command(f"press {logical_key}")
         return True
 
@@ -311,6 +335,7 @@ class KeyboardTestNode(Node):
             state_changed = self._activate_direction_key_locked(logical_key)
             if not state_changed:
                 return
+        self._hold_repeat_timer.reset()
         self._publish_current_command(f"press {logical_key}")
 
     def _on_release(self, key):
@@ -326,6 +351,11 @@ class KeyboardTestNode(Node):
             if logical_key not in self._active_keys:
                 return
             self._active_keys.remove(logical_key)
+            has_active_keys = bool(self._active_keys)
+        if has_active_keys:
+            self._hold_repeat_timer.reset()
+        else:
+            self._hold_repeat_timer.cancel()
         self._publish_current_command(f"release {logical_key}")
 
     def destroy_node(self):
@@ -339,6 +369,7 @@ class KeyboardTestNode(Node):
         if self._tty_reader is not None:
             self._tty_reader.stop()
             self._tty_reader = None
+        self._hold_repeat_timer.cancel()
         self._cancel_tty_release_timer()
         super().destroy_node()
 

@@ -3,7 +3,14 @@ import os
 import yaml
 from ament_index_python import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetLaunchConfiguration
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    SetLaunchConfiguration,
+    TimerAction,
+)
 from launch.conditions import IfCondition, LaunchConfigurationEquals
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
@@ -256,6 +263,6 @@ def generate_launch_description():
         DeclareLaunchArgument("use_nav_rviz", default_value="true"),
         disable_localization,
         sim_launch,
-        navigation_group,
+        TimerAction(period=1.0, actions=[navigation_group]),
         nav_rviz,
     ])

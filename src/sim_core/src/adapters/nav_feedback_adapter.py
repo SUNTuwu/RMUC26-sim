@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bridge Point-LIO gimbal odometry to chassis odometry for sim navigation."""
 
+import copy
 import math
 
 import rclpy
@@ -156,12 +157,14 @@ class NavFeedbackAdapter(Node):
         if self.latest_gimbal_odom is None:
             return
 
-        source = self.latest_gimbal_odom
+        source = copy.deepcopy(self.latest_gimbal_odom)
         child_frame_id = source.child_frame_id or "left_livox_frame"
 
         try:
             transform = self.tf_buffer.lookup_transform(
-                self.base_frame, child_frame_id, Time()
+                self.base_frame,
+                child_frame_id,
+                Time.from_msg(source.header.stamp),
             )
         except TransformException as ex:
             self.get_logger().warn(
@@ -207,10 +210,8 @@ class NavFeedbackAdapter(Node):
             (source_angular.x, source_angular.y, source_angular.z),
         )
 
-        chassis_odom = Odometry()
-        chassis_odom.header = source.header
+        chassis_odom = source
         chassis_odom.child_frame_id = self.base_frame
-        chassis_odom.pose = source.pose
         chassis_odom.pose.pose.position.x += base_position_delta[0]
         chassis_odom.pose.pose.position.y += base_position_delta[1]
         chassis_odom.pose.pose.position.z += base_position_delta[2]
@@ -218,7 +219,6 @@ class NavFeedbackAdapter(Node):
         chassis_odom.pose.pose.orientation.y = q_odom_base[1]
         chassis_odom.pose.pose.orientation.z = q_odom_base[2]
         chassis_odom.pose.pose.orientation.w = q_odom_base[3]
-        chassis_odom.twist = source.twist
         chassis_odom.twist.twist.linear.x = linear_in_base[0]
         chassis_odom.twist.twist.linear.y = linear_in_base[1]
         chassis_odom.twist.twist.linear.z = linear_in_base[2]

@@ -37,6 +37,8 @@ BASE_BORDER_TOP_OFFSET = 0.005
 DEFAULT_BASE_DIRECTION_ARROW_LENGTH = 0.35
 DEFAULT_GIMBAL_DIRECTION_ARROW_LENGTH = 0.25
 DEFAULT_DIRECTION_ARROW_RADIUS = 0.01
+DEFAULT_BASE_DIRECTION_ARROW_RGBA = (1.0, 0.5, 0.0, 1.0)
+DEFAULT_GIMBAL_DIRECTION_ARROW_RGBA = (1.0, 0.05, 0.05, 1.0)
 DEFAULT_LIVOX_VISUAL_RADIUS = 0.035
 DEFAULT_LIVOX_VISUAL_HEIGHT = 0.05
 DEFAULT_LIVOX_BODY_MASS = 0.265
@@ -165,6 +167,20 @@ def _declare_vector3_param(
         node.declare_parameter(param_name, list(default_value)).value,
         param_name,
     )
+
+
+def _declare_rgba_param(
+    node: Node,
+    param_name: str,
+    default_value: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    raw_value = node.declare_parameter(param_name, list(default_value)).value
+    if not isinstance(raw_value, (list, tuple)) or len(raw_value) != 4:
+        raise ValueError(f"{param_name} must be a 4-element list [r, g, b, a]")
+    values = tuple(float(value) for value in raw_value)
+    if any(value < 0.0 or value > 1.0 for value in values):
+        raise ValueError(f"{param_name} values must be in the range [0, 1]")
+    return values
 
 
 def _declare_nonnegative_float_param(
@@ -297,6 +313,16 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
             node,
             "direction_arrow_radius",
             DEFAULT_DIRECTION_ARROW_RADIUS,
+        ),
+        "base_direction_arrow_rgba": _declare_rgba_param(
+            node,
+            "base_direction_arrow_rgba",
+            DEFAULT_BASE_DIRECTION_ARROW_RGBA,
+        ),
+        "gimbal_direction_arrow_rgba": _declare_rgba_param(
+            node,
+            "gimbal_direction_arrow_rgba",
+            DEFAULT_GIMBAL_DIRECTION_ARROW_RGBA,
         ),
         "livox_visual_radius": _declare_nonnegative_float_param(
             node,
@@ -465,7 +491,8 @@ def _build_livox_body_xml(
         <geom name="{display_name}" type="cylinder"
               size="{_format_values((livox_visual_radius, livox_visual_half_height))}"
               material="mat_lidar" mass="0"
-              contype="0" conaffinity="0" group="1"/>
+              contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
+              friction="0 0 0" group="{RENDER_GEOM_GROUP}"/>
         <inertial pos="0 0 0" mass="{livox_body_mass}"
                   diaginertia="{_format_xyz(livox_body_diaginertia_xyz)}"/>
         <geom name="{imu_origin_name}" pos="{_format_xyz(livox_imu_offset_xyz)}"
@@ -486,6 +513,7 @@ def _build_x_direction_arrow_xml(
     length: float,
     radius: float,
     z_offset: float,
+    material_name: str,
 ) -> str:
     head_base_x = length * 0.75
     head_half_width = length * 0.15
@@ -496,17 +524,17 @@ def _build_x_direction_arrow_xml(
         <geom name="{frame_resource(frame_name, 'x_direction_arrow_shaft')}"
               type="cylinder" size="{radius:.9g}"
               fromto="{_format_values((0.0, 0.0, 0.0, *tip))}"
-              material="mat_direction_arrow" mass="0"
+              material="{material_name}" mass="0"
               contype="0" conaffinity="0" group="{RENDER_GEOM_GROUP}"/>
         <geom name="{frame_resource(frame_name, 'x_direction_arrow_left')}"
               type="cylinder" size="{radius:.9g}"
               fromto="{_format_values((head_base_x, head_half_width, 0.0, *tip))}"
-              material="mat_direction_arrow" mass="0"
+              material="{material_name}" mass="0"
               contype="0" conaffinity="0" group="{RENDER_GEOM_GROUP}"/>
         <geom name="{frame_resource(frame_name, 'x_direction_arrow_right')}"
               type="cylinder" size="{radius:.9g}"
               fromto="{_format_values((head_base_x, -head_half_width, 0.0, *tip))}"
-              material="mat_direction_arrow" mass="0"
+              material="{material_name}" mass="0"
               contype="0" conaffinity="0" group="{RENDER_GEOM_GROUP}"/>
       </body>"""
 
@@ -660,12 +688,14 @@ def build_scene_xml(
         scene_geometry["base_direction_arrow_length"],
         direction_arrow_radius,
         base_visual_top + direction_arrow_radius,
+        "mat_base_direction_arrow",
     )
     gimbal_direction_arrow_xml = _build_x_direction_arrow_xml(
         FRAME_GIMBAL,
         scene_geometry["gimbal_direction_arrow_length"],
         direction_arrow_radius,
         direction_arrow_radius,
+        "mat_gimbal_direction_arrow",
     )
     frame_origin_debug_radius = scene_geometry["frame_origin_debug_radius"]
     gimbal_origin_debug_radius = scene_geometry["gimbal_origin_debug_radius"]
@@ -692,7 +722,8 @@ def build_scene_xml(
     <material name="mat_collision_debug" rgba="1.0 0.55 0.1 0.28"/>
     <material name="mat_frame_origin_debug" rgba="1.0 0.0 1.0 1.0"/>
     <material name="mat_imu_origin_debug" rgba="1.0 1.0 0.0 1.0"/>
-    <material name="mat_direction_arrow" rgba="1.0 0.05 0.05 1.0"/>
+    <material name="mat_base_direction_arrow" rgba="{_format_values(scene_geometry['base_direction_arrow_rgba'])}"/>
+    <material name="mat_gimbal_direction_arrow" rgba="{_format_values(scene_geometry['gimbal_direction_arrow_rgba'])}"/>
     <mesh name="arena_view_mesh" file="{view_scene_mesh_rel}"/>
     <mesh name="lidar_detect_mesh" file="{lidar_scene_mesh_rel}"/>
 {collision_asset_xml}

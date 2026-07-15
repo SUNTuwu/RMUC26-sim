@@ -43,6 +43,9 @@ DEFAULT_BOUNDARY_Y_MIN = -7.0
 DEFAULT_BOUNDARY_Y_MAX = 7.0
 DEFAULT_PHYSICS_DT = 0.002
 DEFAULT_ROBOT_INIT_LOCATION = (0.0, 0.0, 10.0)
+DEFAULT_VIEWER_CAMERA_DISTANCE = 3.0
+DEFAULT_VIEWER_CAMERA_AZIMUTH = 135.0
+DEFAULT_VIEWER_CAMERA_ELEVATION = -25.0
 
 
 def _coerce_vector3_param(raw_value, param_name: str) -> tuple[float, float, float]:
@@ -97,6 +100,26 @@ class SimulationRuntime:
         self.node = node
         self.physics_dt = max(float(physics_dt), 1e-6)
         self.enable_viewer = bool(enable_viewer)
+        self.viewer_camera_distance = float(
+            node.declare_parameter(
+                "viewer_camera_distance",
+                DEFAULT_VIEWER_CAMERA_DISTANCE,
+            ).value
+        )
+        if self.viewer_camera_distance <= 0.0:
+            raise ValueError("viewer_camera_distance must be positive")
+        self.viewer_camera_azimuth = float(
+            node.declare_parameter(
+                "viewer_camera_azimuth",
+                DEFAULT_VIEWER_CAMERA_AZIMUTH,
+            ).value
+        )
+        self.viewer_camera_elevation = float(
+            node.declare_parameter(
+                "viewer_camera_elevation",
+                DEFAULT_VIEWER_CAMERA_ELEVATION,
+            ).value
+        )
         self.scene_geometry = scene_geometry
         self.enabled_livox_frames = list(enabled_livox_frames)
         self.model = mujoco.MjModel.from_xml_string(scene_xml)
@@ -240,9 +263,16 @@ class SimulationRuntime:
                 self.viewer.opt.geomgroup[0] = 0
                 self.viewer.opt.geomgroup[2] = 0
                 self.viewer.opt.geomgroup[3] = 0
+                self.viewer.cam.type = int(mujoco.mjtCamera.mjCAMERA_TRACKING)
+                self.viewer.cam.trackbodyid = self.base_body_id
+                self.viewer.cam.fixedcamid = -1
+                self.viewer.cam.lookat[:] = self.data.xpos[self.base_body_id]
+                self.viewer.cam.distance = self.viewer_camera_distance
+                self.viewer.cam.azimuth = self.viewer_camera_azimuth
+                self.viewer.cam.elevation = self.viewer_camera_elevation
             self.node.get_logger().info(
-                "MuJoCo viewer launched. geom groups: render=on, lidar_trace=off, "
-                "collision_debug=off, lidar_debug=off."
+                "MuJoCo viewer launched and focused on base_link. geom groups: "
+                "render=on, lidar_trace=off, collision_debug=off, lidar_debug=off."
             )
         except Exception as exc:
             self.viewer = None
