@@ -299,17 +299,22 @@ class SimulationRuntime:
         gyro = self.data.sensordata[gyro_adr : gyro_adr + 3].copy()
         return acc, gyro
 
-    def _update_imu_accel_debug_geom(self, frame_name: str, acc: np.ndarray) -> None:
+    def _update_imu_accel_debug_geom(
+        self,
+        frame_name: str,
+        acc_in_g: np.ndarray,
+    ) -> None:
         handles = self.livox_handles[frame_name]
-        accel_xy_imu = np.array([float(acc[0]), float(acc[1]), 0.0], dtype=np.float64)
-        accel_xy_norm = float(np.linalg.norm(accel_xy_imu))
-        geom_length = accel_xy_norm * float(self.scene_geometry["imu_accel_debug_scale"])
+        accel_imu = np.asarray(acc_in_g, dtype=np.float64).copy()
+        accel_imu[2] += 1.0
+        accel_norm = float(np.linalg.norm(accel_imu))
+        geom_length = accel_norm * float(self.scene_geometry["imu_accel_debug_scale"])
         min_length = float(self.scene_geometry["imu_accel_debug_min_length"])
-        if accel_xy_norm <= 1e-9 or geom_length <= min_length:
+        if accel_norm <= 1e-9 or geom_length <= min_length:
             direction_imu = np.array([1.0, 0.0, 0.0], dtype=np.float64)
             geom_length = min_length
         else:
-            direction_imu = accel_xy_imu / accel_xy_norm
+            direction_imu = accel_imu / accel_norm
         site_id = handles["imu_site_id"]
         site_rot = self.data.site_xmat[site_id].reshape(3, 3).copy()
         direction_world = site_rot @ direction_imu
@@ -344,7 +349,7 @@ class SimulationRuntime:
             direction_world = force_xy_world / force_norm
         geom_half_height = max(geom_length * 0.5, min_length * 0.5)
         base_pos = self.data.xpos[self.base_body_id].copy()
-        base_debug_height = 0.5 * float(self.scene_geometry["base_collision_height"])
+        base_debug_height = 0.5 * float(self.scene_geometry["base_height"])
         geom_center = base_pos + np.array(
             [0.0, 0.0, base_debug_height],
             dtype=np.float64,

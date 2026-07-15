@@ -28,11 +28,15 @@ DEFAULT_GIMBAL_VISUAL_HALF_EXTENTS_XYZ = (0.11, 0.11, 0.04)
 DEFAULT_GIMBAL_COLLISION_HALF_EXTENTS_XYZ = (0.17, 0.17, 0.09)
 DEFAULT_GIMBAL_BODY_MASS = 1e-3
 DEFAULT_GIMBAL_BODY_DIAGINERTIA_XYZ = (1e-6, 1e-6, 1e-6)
-DEFAULT_BASE_VISUAL_RADIUS = 0.225
-DEFAULT_BASE_VISUAL_HEIGHT = 0.02
-DEFAULT_BASE_COLLISION_RADIUS = 0.225
-DEFAULT_BASE_COLLISION_HEIGHT = 0.06
-DEFAULT_BASE_COLLISION_MASS = 20.0
+DEFAULT_BASE_RADIUS = 0.25
+DEFAULT_BASE_HEIGHT = 0.14
+DEFAULT_BASE_BODY_MASS = 20.0
+DEFAULT_ENABLE_BASE_BORDER = True
+DEFAULT_BASE_BORDER_SIZE_XYZ = (0.5, 0.5, 0.1)
+BASE_BORDER_TOP_OFFSET = 0.005
+DEFAULT_BASE_DIRECTION_ARROW_LENGTH = 0.35
+DEFAULT_GIMBAL_DIRECTION_ARROW_LENGTH = 0.25
+DEFAULT_DIRECTION_ARROW_RADIUS = 0.01
 DEFAULT_LIVOX_VISUAL_RADIUS = 0.035
 DEFAULT_LIVOX_VISUAL_HEIGHT = 0.05
 DEFAULT_LIVOX_BODY_MASS = 0.265
@@ -169,6 +173,28 @@ def _declare_nonnegative_float_param(
     return max(float(node.declare_parameter(param_name, default_value).value), 0.0)
 
 
+def _declare_positive_float_param(
+    node: Node,
+    param_name: str,
+    default_value: float,
+) -> float:
+    value = float(node.declare_parameter(param_name, default_value).value)
+    if value <= 0.0:
+        raise ValueError(f"{param_name} must be positive")
+    return value
+
+
+def _declare_positive_vector3_param(
+    node: Node,
+    param_name: str,
+    default_value: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    values = _declare_vector3_param(node, param_name, default_value)
+    if any(value <= 0.0 for value in values):
+        raise ValueError(f"{param_name} values must be positive")
+    return values
+
+
 def _urdf_rpy_to_quat_wxyz(
     roll: float, pitch: float, yaw: float
 ) -> tuple[float, float, float, float]:
@@ -200,6 +226,29 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
         "livox_imu_rpy",
         DEFAULT_LIVOX_IMU_RPY,
     )
+    base_height = _declare_positive_float_param(
+        node,
+        "base_height",
+        DEFAULT_BASE_HEIGHT,
+    )
+    base_border_size_xyz = _declare_positive_vector3_param(
+        node,
+        "base_border_size_xyz",
+        DEFAULT_BASE_BORDER_SIZE_XYZ,
+    )
+    enable_base_border = bool(
+        node.declare_parameter(
+            "enable_base_border",
+            DEFAULT_ENABLE_BASE_BORDER,
+        ).value
+    )
+    if (
+        enable_base_border
+        and base_border_size_xyz[2] > base_height + BASE_BORDER_TOP_OFFSET
+    ):
+        raise ValueError(
+            "base_border_size_xyz height must not extend below the base"
+        )
     return {
         "gimbal_visual_half_extents_xyz": _declare_vector3_param(
             node,
@@ -221,30 +270,33 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
             "gimbal_body_diaginertia_xyz",
             DEFAULT_GIMBAL_BODY_DIAGINERTIA_XYZ,
         ),
-        "base_visual_radius": _declare_nonnegative_float_param(
+        "base_radius": _declare_positive_float_param(
             node,
-            "base_visual_radius",
-            DEFAULT_BASE_VISUAL_RADIUS,
+            "base_radius",
+            DEFAULT_BASE_RADIUS,
         ),
-        "base_visual_height": _declare_nonnegative_float_param(
+        "base_height": base_height,
+        "base_body_mass": _declare_positive_float_param(
             node,
-            "base_visual_height",
-            DEFAULT_BASE_VISUAL_HEIGHT,
+            "base_body_mass",
+            DEFAULT_BASE_BODY_MASS,
         ),
-        "base_collision_radius": _declare_nonnegative_float_param(
+        "enable_base_border": enable_base_border,
+        "base_border_size_xyz": base_border_size_xyz,
+        "base_direction_arrow_length": _declare_positive_float_param(
             node,
-            "base_collision_radius",
-            DEFAULT_BASE_COLLISION_RADIUS,
+            "base_direction_arrow_length",
+            DEFAULT_BASE_DIRECTION_ARROW_LENGTH,
         ),
-        "base_collision_height": _declare_nonnegative_float_param(
+        "gimbal_direction_arrow_length": _declare_positive_float_param(
             node,
-            "base_collision_height",
-            DEFAULT_BASE_COLLISION_HEIGHT,
+            "gimbal_direction_arrow_length",
+            DEFAULT_GIMBAL_DIRECTION_ARROW_LENGTH,
         ),
-        "base_collision_mass": _declare_nonnegative_float_param(
+        "direction_arrow_radius": _declare_positive_float_param(
             node,
-            "base_collision_mass",
-            DEFAULT_BASE_COLLISION_MASS,
+            "direction_arrow_radius",
+            DEFAULT_DIRECTION_ARROW_RADIUS,
         ),
         "livox_visual_radius": _declare_nonnegative_float_param(
             node,
@@ -429,6 +481,36 @@ def _build_livox_body_xml(
       </body>"""
 
 
+def _build_x_direction_arrow_xml(
+    frame_name: str,
+    length: float,
+    radius: float,
+    z_offset: float,
+) -> str:
+    head_base_x = length * 0.75
+    head_half_width = length * 0.15
+    tip = (length, 0.0, 0.0)
+    return f"""
+      <body name="{frame_resource(frame_name, 'x_direction_arrow')}"
+            pos="0 0 {z_offset:.9g}">
+        <geom name="{frame_resource(frame_name, 'x_direction_arrow_shaft')}"
+              type="cylinder" size="{radius:.9g}"
+              fromto="{_format_values((0.0, 0.0, 0.0, *tip))}"
+              material="mat_direction_arrow" mass="0"
+              contype="0" conaffinity="0" group="{RENDER_GEOM_GROUP}"/>
+        <geom name="{frame_resource(frame_name, 'x_direction_arrow_left')}"
+              type="cylinder" size="{radius:.9g}"
+              fromto="{_format_values((head_base_x, head_half_width, 0.0, *tip))}"
+              material="mat_direction_arrow" mass="0"
+              contype="0" conaffinity="0" group="{RENDER_GEOM_GROUP}"/>
+        <geom name="{frame_resource(frame_name, 'x_direction_arrow_right')}"
+              type="cylinder" size="{radius:.9g}"
+              fromto="{_format_values((head_base_x, -head_half_width, 0.0, *tip))}"
+              material="mat_direction_arrow" mass="0"
+              contype="0" conaffinity="0" group="{RENDER_GEOM_GROUP}"/>
+      </body>"""
+
+
 def build_scene_xml(
     meshdir: str,
     frame_tree: RobotFrameTree,
@@ -552,11 +634,39 @@ def build_scene_xml(
     gimbal_collision_half_extents_xyz = scene_geometry["gimbal_collision_half_extents_xyz"]
     gimbal_body_mass = scene_geometry["gimbal_body_mass"]
     gimbal_body_diaginertia_xyz = scene_geometry["gimbal_body_diaginertia_xyz"]
-    base_visual_radius = scene_geometry["base_visual_radius"]
-    base_visual_half_height = scene_geometry["base_visual_height"] / 2.0
-    base_collision_radius = scene_geometry["base_collision_radius"]
-    base_collision_half_height = scene_geometry["base_collision_height"] / 2.0
-    base_collision_mass = scene_geometry["base_collision_mass"]
+    base_radius = scene_geometry["base_radius"]
+    base_height = scene_geometry["base_height"]
+    base_half_height = base_height / 2.0
+    base_body_mass = scene_geometry["base_body_mass"]
+    base_border_size_xyz = scene_geometry["base_border_size_xyz"]
+    base_border_half_extents_xyz = tuple(
+        value / 2.0 for value in base_border_size_xyz
+    )
+    base_visual_top = base_height
+    base_border_xml = ""
+    if scene_geometry["enable_base_border"]:
+        base_visual_top += BASE_BORDER_TOP_OFFSET
+        base_border_center_z = base_visual_top - base_border_half_extents_xyz[2]
+        base_border_xml = f"""
+      <geom name="{frame_resource(FRAME_BASE_LINK, 'border')}" type="box"
+            size="{_format_xyz(base_border_half_extents_xyz)}"
+            pos="0 0 {base_border_center_z:.9g}"
+            material="mat_chassis" mass="0"
+            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
+            friction="0 0 0" group="1"/>"""
+    direction_arrow_radius = scene_geometry["direction_arrow_radius"]
+    base_direction_arrow_xml = _build_x_direction_arrow_xml(
+        FRAME_BASE_LINK,
+        scene_geometry["base_direction_arrow_length"],
+        direction_arrow_radius,
+        base_visual_top + direction_arrow_radius,
+    )
+    gimbal_direction_arrow_xml = _build_x_direction_arrow_xml(
+        FRAME_GIMBAL,
+        scene_geometry["gimbal_direction_arrow_length"],
+        direction_arrow_radius,
+        direction_arrow_radius,
+    )
     frame_origin_debug_radius = scene_geometry["frame_origin_debug_radius"]
     gimbal_origin_debug_radius = scene_geometry["gimbal_origin_debug_radius"]
     livox_blocks_xml = "".join(livox_blocks)
@@ -582,6 +692,7 @@ def build_scene_xml(
     <material name="mat_collision_debug" rgba="1.0 0.55 0.1 0.28"/>
     <material name="mat_frame_origin_debug" rgba="1.0 0.0 1.0 1.0"/>
     <material name="mat_imu_origin_debug" rgba="1.0 1.0 0.0 1.0"/>
+    <material name="mat_direction_arrow" rgba="1.0 0.05 0.05 1.0"/>
     <mesh name="arena_view_mesh" file="{view_scene_mesh_rel}"/>
     <mesh name="lidar_detect_mesh" file="{lidar_scene_mesh_rel}"/>
 {collision_asset_xml}
@@ -609,18 +720,12 @@ def build_scene_xml(
             size="{frame_origin_debug_radius}"
             material="mat_frame_origin_debug" mass="0"
             contype="0" conaffinity="0" group="1"/>
-      <geom name="{frame_resource(FRAME_BASE_LINK, 'display')}" type="cylinder"
-            size="{_format_values((base_visual_radius, base_visual_half_height))}"
-            pos="0 0 {base_visual_half_height:.9g}"
-            material="mat_chassis" mass="0"
-            contype="0" conaffinity="0" condim="3"
-            friction="0 0 0" group="1"/>
-      <geom name="{frame_resource(FRAME_BASE_LINK, 'collision')}" type="cylinder"
-            size="{_format_values((base_collision_radius, base_collision_half_height))}"
-            pos="0 0 {base_collision_half_height:.9g}"
-            material="mat_chassis" mass="{base_collision_mass}"
+      <geom name="{frame_resource(FRAME_BASE_LINK, 'body')}" type="cylinder"
+            size="{_format_values((base_radius, base_half_height))}"
+            pos="0 0 {base_half_height:.9g}"
+            material="mat_chassis" mass="{base_body_mass}"
             contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
-            friction="0 0 0" group="1"/>
+            friction="0 0 0" group="1"/>{base_border_xml}{base_direction_arrow_xml}
       <body name="{FRAME_GIMBAL}" pos="{_format_xyz(gimbal_relative_to_base_pos)}"
             quat="{_format_quat_wxyz(gimbal_relative_to_base_quat)}">
         <joint name="{JOINT_GIMBAL_YAW}" type="hinge"
@@ -641,7 +746,7 @@ def build_scene_xml(
             pos="0 0 {-gimbal_collision_half_extents_xyz[2]:.9g}"
             rgba="0 0 0 0" mass="0"
             contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
-            friction="0 0 0" group="1"/>
+            friction="0 0 0" group="1"/>{gimbal_direction_arrow_xml}
       <body name="{FRAME_GIMBAL_ODOM}" pos="{_format_xyz(gimbal_odom_pose.pos)}"
             quat="{_format_quat_wxyz(gimbal_odom_pose.quat_wxyz)}">
         <geom name="{frame_resource(FRAME_GIMBAL_ODOM, 'origin_debug')}" type="sphere"
