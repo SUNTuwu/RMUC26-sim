@@ -23,11 +23,9 @@ from .frame_tree import (
     load_robot_frame_tree,
 )
 from .scene_builder import (
-    COLLISION_GEOM_GROUP,
     base_force_debug_body_name,
     base_force_debug_geom_name,
     build_scene_xml,
-    frame_resource,
     livox_accel_debug_body_name,
     livox_accel_debug_geom_name,
     livox_accel_sensor_name,
@@ -43,11 +41,6 @@ DEFAULT_BOUNDARY_X_MIN = -13.5
 DEFAULT_BOUNDARY_X_MAX = 13.5
 DEFAULT_BOUNDARY_Y_MIN = -7.0
 DEFAULT_BOUNDARY_Y_MAX = 7.0
-DEFAULT_USE_KEEP_STAND = False
-DEFAULT_USE_VERTICAL_LAND_FORCE = True
-DEFAULT_TILT_DOWNFORCE_THRESHOLD_DEG = 15.0
-DEFAULT_TILT_DOWNFORCE_SCALE = 300.0
-DEFAULT_TILT_DOWNFORCE_EXP_GAIN = 6.0
 DEFAULT_PHYSICS_DT = 0.002
 DEFAULT_ROBOT_INIT_LOCATION = (0.0, 0.0, 10.0)
 
@@ -62,31 +55,11 @@ def wrap_to_pi(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
 
-def clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, value))
-
-
 def normalize_vector(vec: np.ndarray, eps: float = 1e-9) -> np.ndarray | None:
     norm = float(np.linalg.norm(vec))
     if norm <= eps:
         return None
     return vec / norm
-
-
-def quat_to_rpy(quat) -> tuple[float, float, float]:
-    w, x, y, z = quat
-    sinr_cosp = 2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
-    sinp = 2.0 * (w * y - z * x)
-    if abs(sinp) >= 1.0:
-        pitch = math.copysign(math.pi / 2.0, sinp)
-    else:
-        pitch = math.asin(sinp)
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = math.atan2(siny_cosp, cosy_cosp)
-    return roll, pitch, yaw
 
 
 def quat_from_local_z_axis(direction: np.ndarray) -> tuple[float, float, float, float]:
@@ -118,32 +91,12 @@ class SimulationRuntime:
         scene_xml: str,
         physics_dt: float,
         enable_viewer: bool,
-        use_keep_stand: bool,
-        use_vertical_land_force: bool,
-        tilt_downforce_threshold_deg: float,
-        tilt_downforce_scale: float,
-        tilt_downforce_exp_gain: float,
-        boundary_x_min: float,
-        boundary_x_max: float,
-        boundary_y_min: float,
-        boundary_y_max: float,
         enabled_livox_frames: list[str],
         scene_geometry: dict[str, object],
     ) -> None:
         self.node = node
         self.physics_dt = max(float(physics_dt), 1e-6)
         self.enable_viewer = bool(enable_viewer)
-        self.use_keep_stand = bool(use_keep_stand)
-        self.use_vertical_land_force = bool(use_vertical_land_force)
-        self.tilt_downforce_threshold_rad = math.radians(
-            max(float(tilt_downforce_threshold_deg), 0.0)
-        )
-        self.tilt_downforce_scale = max(float(tilt_downforce_scale), 0.0)
-        self.tilt_downforce_exp_gain = max(float(tilt_downforce_exp_gain), 0.0)
-        self.boundary_x_min = float(boundary_x_min)
-        self.boundary_x_max = float(boundary_x_max)
-        self.boundary_y_min = float(boundary_y_min)
-        self.boundary_y_max = float(boundary_y_max)
         self.scene_geometry = scene_geometry
         self.enabled_livox_frames = list(enabled_livox_frames)
         self.model = mujoco.MjModel.from_xml_string(scene_xml)
@@ -165,8 +118,6 @@ class SimulationRuntime:
         self.gimbal_joint_pos = 0.0
         self.gimbal_joint_vel = 0.0
         self.clock_pub = node.create_publisher(rosgraph_msgs.msg.Clock, "/clock", 10)
-        self.keep_stand_geomgroup = np.zeros(6, dtype=np.uint8)
-        self.keep_stand_geomgroup[COLLISION_GEOM_GROUP] = 1
         self.gimbal_joint_id = self._require_name(
             mujoco.mjtObj.mjOBJ_JOINT,
             JOINT_GIMBAL_YAW,
@@ -421,62 +372,20 @@ class SimulationRuntime:
         self.gimbal_joint_pos = -float(self.data.qpos[self.gimbal_qpos_adr])
         self.gimbal_joint_vel = 0.0
 
-    def _compute_surface_aligned_quat(
+    def _read_body_velocity_world(
         self,
-        base_pos: np.ndarray,
-        yaw: float,
-    ) -> np.ndarray | None:
-        gravity_dir = normalize_vector(np.array(self.model.opt.gravity, dtype=np.float64))
-        if gravity_dir is None:
-            gravity_dir = np.array([0.0, 0.0, -1.0], dtype=np.float64)
-        geomid = np.array([-1], dtype=np.int32)
-        surface_normal = np.zeros(3, dtype=np.float64)
-        hit_dist = mujoco.mj_ray(
+        body_id: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        velocity = np.zeros(6, dtype=np.float64)
+        mujoco.mj_objectVelocity(
             self.model,
             self.data,
-            np.asarray(base_pos, dtype=np.float64),
-            gravity_dir,
-            self.keep_stand_geomgroup,
-            True,
-            self.base_body_id,
-            geomid,
-            surface_normal,
+            mujoco.mjtObj.mjOBJ_BODY,
+            body_id,
+            velocity,
+            0,
         )
-        if hit_dist <= 0.0:
-            return None
-        up_axis = -gravity_dir
-        z_axis = normalize_vector(surface_normal)
-        if z_axis is None:
-            return None
-        if float(np.dot(z_axis, up_axis)) < 0.0:
-            z_axis = -z_axis
-        x_hint = np.array([math.cos(yaw), math.sin(yaw), 0.0], dtype=np.float64)
-        x_axis = normalize_vector(x_hint - z_axis * float(np.dot(x_hint, z_axis)))
-        if x_axis is None:
-            return None
-        y_axis = normalize_vector(np.cross(z_axis, x_axis))
-        if y_axis is None:
-            return None
-        x_axis = normalize_vector(np.cross(y_axis, z_axis))
-        if x_axis is None:
-            return None
-        rot_mat = np.column_stack((x_axis, y_axis, z_axis))
-        quat = np.zeros(4, dtype=np.float64)
-        mujoco.mju_mat2Quat(quat, rot_mat.reshape(-1))
-        return quat
-
-    def _compute_tilt_downforce(self, quat: np.ndarray) -> float:
-        rot_mat = np.zeros(9, dtype=np.float64)
-        mujoco.mju_quat2Mat(rot_mat, quat)
-        body_z_axis = rot_mat.reshape(3, 3)[:, 2]
-        cos_tilt = clamp(float(body_z_axis[2]), -1.0, 1.0)
-        tilt_rad = math.acos(cos_tilt)
-        tilt_excess = max(0.0, tilt_rad - self.tilt_downforce_threshold_rad)
-        if tilt_excess <= 0.0:
-            return 0.0
-        return self.tilt_downforce_scale * (
-            math.exp(self.tilt_downforce_exp_gain * tilt_excess) - 1.0
-        )
+        return velocity[0:3], velocity[3:6]
 
     def read_joint_state(self) -> tuple[builtin_interfaces.msg.Time, float, float]:
         with self.physics_lock:
@@ -488,63 +397,49 @@ class SimulationRuntime:
         while self.running and rclpy.ok():
             current_sim_time_ns = self.latest_sim_time_ns
             with self.physics_lock:
-                base_quat = self.data.qpos[3:7]
-                gimbal_rot_mat = self.data.xmat[self.gimbal_body_id].reshape(3, 3).copy()
-                base_linear_velocity_world = self.data.qvel[0:3].copy()
+                base_rot_mat = (
+                    self.data.xmat[self.base_body_id].reshape(3, 3).copy()
+                )
+                gimbal_rot_mat = (
+                    self.data.xmat[self.gimbal_body_id].reshape(3, 3).copy()
+                )
+                base_angular_velocity_world, base_linear_velocity_world = (
+                    self._read_body_velocity_world(self.base_body_id)
+                )
+                gimbal_angular_velocity_world, _ = self._read_body_velocity_world(
+                    self.gimbal_body_id
+                )
+                chassis_yaw_rate = float(
+                    np.dot(base_angular_velocity_world, base_rot_mat[:, 2])
+                )
+                gimbal_yaw_rate = float(
+                    np.dot(gimbal_angular_velocity_world, gimbal_rot_mat[:, 2])
+                )
                 base_force_world = np.zeros(3, dtype=np.float64)
-                target_chassis_yaw_rate = 0.0
-                target_gimbal_yaw_rate = 0.0
+                chassis_yaw_torque = 0.0
+                gimbal_yaw_torque = 0.0
                 if self.control_provider is not None:
                     now_ros = self.node.get_clock().now()
                     (
                         base_force_world,
-                        target_chassis_yaw_rate,
-                        target_gimbal_yaw_rate,
+                        chassis_yaw_torque,
+                        gimbal_yaw_torque,
                     ) = self.control_provider(
                         now_ros,
                         self.physics_dt,
                         gimbal_rot_mat,
                         base_linear_velocity_world,
+                        chassis_yaw_rate,
+                        gimbal_yaw_rate,
                     )
                 base_force_world = np.asarray(base_force_world, dtype=np.float64)
                 self.data.xfrc_applied[self.gimbal_body_id, :] = 0.0
                 self.data.xfrc_applied[self.base_body_id, :] = 0.0
                 self.data.xfrc_applied[self.base_body_id, 0:3] = base_force_world
-                if self.use_vertical_land_force:
-                    tilt_downforce = self._compute_tilt_downforce(
-                        self.data.xquat[self.base_body_id].copy()
-                    )
-                    if tilt_downforce > 0.0:
-                        self.data.xfrc_applied[self.base_body_id, 2] -= tilt_downforce
-                self.data.qvel[5] = float(target_chassis_yaw_rate)
-                self.data.qvel[self.gimbal_dof_adr] = float(
-                    target_gimbal_yaw_rate - target_chassis_yaw_rate
-                )
+                base_torque_world = base_rot_mat[:, 2] * float(chassis_yaw_torque)
+                self.data.xfrc_applied[self.base_body_id, 3:6] = base_torque_world
+                self.data.qfrc_applied[self.gimbal_dof_adr] = float(gimbal_yaw_torque)
                 mujoco.mj_step(self.model, self.data)
-                quat = self.data.qpos[3:7].copy()
-                _, _, base_yaw = quat_to_rpy(quat)
-                if self.use_keep_stand:
-                    aligned_quat = self._compute_surface_aligned_quat(
-                        self.data.qpos[0:3].copy(),
-                        base_yaw,
-                    )
-                    if aligned_quat is not None:
-                        self.data.qpos[3:7] = aligned_quat
-                        self.data.qvel[3] = 0.0
-                        self.data.qvel[4] = 0.0
-                pos = self.data.qpos[0:3]
-                if pos[0] < self.boundary_x_min:
-                    self.data.qpos[0] = self.boundary_x_min
-                    self.data.qvel[0] = max(0.0, self.data.qvel[0])
-                elif pos[0] > self.boundary_x_max:
-                    self.data.qpos[0] = self.boundary_x_max
-                    self.data.qvel[0] = min(0.0, self.data.qvel[0])
-                if pos[1] < self.boundary_y_min:
-                    self.data.qpos[1] = self.boundary_y_min
-                    self.data.qvel[1] = max(0.0, self.data.qvel[1])
-                elif pos[1] > self.boundary_y_max:
-                    self.data.qpos[1] = self.boundary_y_max
-                    self.data.qvel[1] = min(0.0, self.data.qvel[1])
                 for frame_name in self.enabled_livox_frames:
                     acc, _ = self.read_imu_for_frame_locked(frame_name)
                     self._update_imu_accel_debug_geom(frame_name, acc / GRAVITY_M_S2)
@@ -606,42 +501,6 @@ class SentrySimNode(Node):
             raise ValueError("boundary_x_min must be smaller than boundary_x_max")
         if boundary_y_min >= boundary_y_max:
             raise ValueError("boundary_y_min must be smaller than boundary_y_max")
-        use_keep_stand = bool(
-            self.declare_parameter("use_keep_stand", DEFAULT_USE_KEEP_STAND).value
-        )
-        use_vertical_land_force = bool(
-            self.declare_parameter(
-                "use_vertical_land_force",
-                DEFAULT_USE_VERTICAL_LAND_FORCE,
-            ).value
-        )
-        tilt_downforce_threshold_deg = max(
-            float(
-                self.declare_parameter(
-                    "tilt_downforce_threshold_deg",
-                    DEFAULT_TILT_DOWNFORCE_THRESHOLD_DEG,
-                ).value
-            ),
-            0.0,
-        )
-        tilt_downforce_scale = max(
-            float(
-                self.declare_parameter(
-                    "tilt_downforce_scale",
-                    DEFAULT_TILT_DOWNFORCE_SCALE,
-                ).value
-            ),
-            0.0,
-        )
-        tilt_downforce_exp_gain = max(
-            float(
-                self.declare_parameter(
-                    "tilt_downforce_exp_gain",
-                    DEFAULT_TILT_DOWNFORCE_EXP_GAIN,
-                ).value
-            ),
-            0.0,
-        )
         physics_dt = max(
             float(self.declare_parameter("physics_dt", DEFAULT_PHYSICS_DT).value),
             1e-6,
@@ -689,15 +548,6 @@ class SentrySimNode(Node):
             scene_xml=scene_xml,
             physics_dt=physics_dt,
             enable_viewer=enable_viewer,
-            use_keep_stand=use_keep_stand,
-            use_vertical_land_force=use_vertical_land_force,
-            tilt_downforce_threshold_deg=tilt_downforce_threshold_deg,
-            tilt_downforce_scale=tilt_downforce_scale,
-            tilt_downforce_exp_gain=tilt_downforce_exp_gain,
-            boundary_x_min=boundary_x_min,
-            boundary_x_max=boundary_x_max,
-            boundary_y_min=boundary_y_min,
-            boundary_y_max=boundary_y_max,
             enabled_livox_frames=enabled_livox_frames,
             scene_geometry=scene_geometry,
         )

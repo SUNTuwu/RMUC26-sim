@@ -55,6 +55,45 @@ class ComponentManager:
             float(node.declare_parameter("gimbal_angular_accel_limit", 12.0).value),
             0.0,
         )
+        chassis_angular_velocity_p_gain = max(
+            float(
+                node.declare_parameter(
+                    "chassis_angular_velocity_p_gain",
+                    12.0,
+                ).value
+            ),
+            0.0,
+        )
+        chassis_angular_velocity_d_gain = max(
+            float(
+                node.declare_parameter(
+                    "chassis_angular_velocity_d_gain",
+                    0.1,
+                ).value
+            ),
+            0.0,
+        )
+        chassis_max_torque = max(
+            float(node.declare_parameter("chassis_max_torque", 30.0).value),
+            0.0,
+        )
+        gimbal_angular_velocity_p_gain = max(
+            float(
+                node.declare_parameter(
+                    "gimbal_angular_velocity_p_gain",
+                    0.6,
+                ).value
+            ),
+            0.0,
+        )
+        gimbal_angular_velocity_d_gain = max(
+            float(node.declare_parameter("gimbal_angular_velocity_d_gain", 0.005).value),
+            0.0,
+        )
+        gimbal_max_torque = max(
+            float(node.declare_parameter("gimbal_max_torque", 1.5).value),
+            0.0,
+        )
         node.declare_parameter("left_lidar_ip", "192.168.10.4")
         node.declare_parameter("right_lidar_ip", "192.168.10.5")
         node.declare_parameter("lidar_rate", DEFAULT_LIDAR_RATE)
@@ -78,6 +117,12 @@ class ComponentManager:
             self.cmd_vel_timeout_sec,
             chassis_angular_accel_limit,
             gimbal_angular_accel_limit,
+            chassis_angular_velocity_p_gain,
+            chassis_angular_velocity_d_gain,
+            chassis_max_torque,
+            gimbal_angular_velocity_p_gain,
+            gimbal_angular_velocity_d_gain,
+            gimbal_max_torque,
         )
         self.livox_components: list[LivoxComponent] = []
         if bool(node.get_parameter("enable_left_livox").value):
@@ -146,6 +191,8 @@ class ComponentManager:
         dt: float,
         gimbal_rot_mat,
         base_linear_velocity_world,
+        chassis_yaw_rate: float,
+        gimbal_yaw_rate: float,
     ) -> tuple[object, float, float]:
         self._refresh_active_cmd_source(now)
         base_force_world = self.chassis_component.compute_drive_force(
@@ -154,8 +201,15 @@ class ComponentManager:
             gimbal_rot_mat,
             base_linear_velocity_world,
         )
-        chassis_yaw_rate, gimbal_yaw_rate = self.gimbal_component.sample(now, dt)
-        return base_force_world, chassis_yaw_rate, gimbal_yaw_rate
+        chassis_yaw_torque, gimbal_yaw_torque = (
+            self.gimbal_component.compute_drive_torques(
+                now,
+                dt,
+                chassis_yaw_rate,
+                gimbal_yaw_rate,
+            )
+        )
+        return base_force_world, chassis_yaw_torque, gimbal_yaw_torque
 
     def publish_joint_state(self) -> None:
         stamp, joint_pos, joint_vel = self.runtime.read_joint_state()

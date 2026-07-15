@@ -60,19 +60,24 @@ sentry_sim_node:
     boundary_wall_thickness: 0.05
     boundary_wall_height: 1.2
     
-    use_keep_stand: false # force the robot to stand upright 
-    use_vertical_land_force: true # apply external vertical land force to keep robot upright
     chassis_cmd_vel_topic: /cmd_vel_chassis
     cmd_vel_timeout_sec: 0.5
+
     chassis_linear_accel_limit: 8.0
     chassis_velocity_p_gain: 180.0
     chassis_velocity_d_gain: 10.0
     chassis_max_force: 250.0
+
     chassis_angular_accel_limit: 10.0
+    chassis_angular_velocity_p_gain: 12.0
+    chassis_angular_velocity_d_gain: 0.1
+    chassis_max_torque: 30.0
+
     gimbal_angular_accel_limit: 10.0
-    tilt_downforce_threshold_deg: 10.0
-    tilt_downforce_scale: 300.0
-    tilt_downforce_exp_gain: 6.0
+    gimbal_angular_velocity_p_gain: 0.6
+    gimbal_angular_velocity_d_gain: 0.005
+    gimbal_max_torque: 1.5
+
     boundary_x_min: -13.6
     boundary_x_max: 13.6
     boundary_y_min: -7.0
