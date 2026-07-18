@@ -28,7 +28,7 @@ sentry_sim/
   - 提供 `sentry_sim_node`，负责 MuJoCo 仿真本体、场景装配、物理推进和传感器模拟。
   - 内部按 `runtime / components / adapters` 分层，分别承载仿真内核、组件执行和外部接口适配。
   - 提供 `components/_livox_bridge.py`，把仿真雷达点云编码成 `livox_ros_driver2/msg/CustomMsg` / PointCloud2，直接对接实机算法链。
-  - 提供 `adapters/chassis.py`、`keyboard_test`、`adapters/nav_feedback_adapter.py` 等控制与导航适配节点。
+  - 提供 `adapters/chassis_adapter.py`、`adapters/imu_adapter.py`、`keyboard_test`、`adapters/nav_feedback_adapter.py` 等控制、传感器与导航适配节点。
 - `sim_bringup`
   - 提供 `sim.launch.py`，用于纯仿真启动。
   - 提供 `sim3d_nav.launch.py`，用于仿真接入外部状态估计、建图、导航链。
@@ -52,12 +52,12 @@ sentry_sim/
   - 只关心仿真内部状态与物理执行，不直接承接键盘、导航、串口这类外部协议语义。
 - `components`
   - 对应 `sim_core/components/` 与 `component_manager.py`。
-  - 由 `ComponentManager` 挂载到 `runtime` 周围，消费统一的内部控制入口，例如 `/cmd_vel_chassis`，并发布仿真可观测数据，例如 `/joint_states`、Livox 点云和 IMU。
+  - 由 `ComponentManager` 挂载到 `runtime` 周围，消费统一的内部控制入口 `/sim/cmd_vel`，并发布仿真可观测数据，例如 `/joint_states`、Livox 点云和原始 IMU。
   - `comp_chassis.py`、`comp_gimbal.py`、`comp_livox.py` 属于这一层；`_livox_bridge.py` 是 `comp_livox.py` 的私有编码辅助，不单独承担节点生命周期。
 - `adapters`
   - 对应 `sim_core/adapters/` 下的独立 ROS 节点。
   - 负责把外部控制链或导航链的话题语义整理成仿真内部统一接口，或把仿真/估计结果转换成外部更需要的反馈接口。
-  - `adapters/chassis.py` 负责把键盘控制整理成 `/cmd_vel_chassis`；`adapters/nav_feedback_adapter.py` 负责把 `/gimbal_Odometry`、`/joint_states` 等整理成 `/Odometry` 和外部反馈话题。
+  - `adapters/chassis_adapter.py` 负责把键盘控制整理成 `/sim/cmd_vel`；`adapters/imu_adapter.py` 负责把 `/sim/imu_*` 低通滤波后发布为 `/livox/imu_*`；`adapters/nav_feedback_adapter.py` 负责把 `/gimbal_Odometry`、`/joint_states` 等整理成 `/Odometry` 和外部反馈话题。
 
 ### 分层约束
 
@@ -99,7 +99,8 @@ sentry_sim/
 
 `sim_bringup/sim.launch.py` 会启动：
 
-- `sim_core/chassis`
+- `sim_core/chassis_adapter`
+- `sim_core/imu_adapter`
 - `robot_state_publisher`
 - `sim_core/sentry_sim_node`
 

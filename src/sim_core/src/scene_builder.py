@@ -24,16 +24,25 @@ COLLISION_GEOM_GROUP = 2
 ENV_CONTYPE = 1
 ROBOT_CONTYPE = 2
 
+DEFAULT_PHYSICS_INTEGRATOR = "implicitfast"
+DEFAULT_CONTACT_SOLREF = (0.03, 1.2)
+DEFAULT_CONTACT_SOLIMP = (0.9, 0.95, 0.001, 0.5, 2.0)
 DEFAULT_GIMBAL_VISUAL_HALF_EXTENTS_XYZ = (0.11, 0.11, 0.04)
 DEFAULT_GIMBAL_COLLISION_HALF_EXTENTS_XYZ = (0.17, 0.17, 0.09)
 DEFAULT_GIMBAL_BODY_MASS = 1e-3
 DEFAULT_GIMBAL_BODY_DIAGINERTIA_XYZ = (1e-6, 1e-6, 1e-6)
-DEFAULT_BASE_RADIUS = 0.25
-DEFAULT_BASE_HEIGHT = 0.14
+DEFAULT_BASE_BOTTOM_HEIGHT = 0.08
+DEFAULT_BASE_TOP_HEIGHT = 0.22
+DEFAULT_BASE_DIAMETER = 0.5
 DEFAULT_BASE_BODY_MASS = 20.0
 DEFAULT_ENABLE_BASE_BORDER = True
 DEFAULT_BASE_BORDER_SIZE_XYZ = (0.5, 0.5, 0.1)
 BASE_BORDER_TOP_OFFSET = 0.005
+DEFAULT_WHEEL_SPACING_X = 0.4
+DEFAULT_WHEEL_SPACING_Y = 0.4
+DEFAULT_WHEEL_DIAMETER = 0.14
+DEFAULT_WHEEL_CONTACT_SOLREF = (0.05, 1.2)
+DEFAULT_WHEEL_CONTACT_SOLIMP = (0.8, 0.95, 0.003, 0.5, 2.0)
 DEFAULT_BASE_DIRECTION_ARROW_LENGTH = 0.35
 DEFAULT_GIMBAL_DIRECTION_ARROW_LENGTH = 0.25
 DEFAULT_DIRECTION_ARROW_RADIUS = 0.01
@@ -211,6 +220,91 @@ def _declare_positive_vector3_param(
     return values
 
 
+def _declare_float_vector_param(
+    node: Node,
+    param_name: str,
+    default_value: tuple[float, ...],
+) -> tuple[float, ...]:
+    raw_value = node.declare_parameter(param_name, list(default_value)).value
+    if (
+        not isinstance(raw_value, (list, tuple))
+        or len(raw_value) != len(default_value)
+    ):
+        raise ValueError(
+            f"{param_name} must be a {len(default_value)}-element list"
+        )
+    return tuple(float(value) for value in raw_value)
+
+
+def _declare_solref_param(
+    node: Node,
+    param_name: str,
+    default_value: tuple[float, float],
+) -> tuple[float, float]:
+    values = _declare_float_vector_param(node, param_name, default_value)
+    if any(value <= 0.0 for value in values):
+        raise ValueError(
+            f"{param_name} must use positive [time_constant, damping_ratio] values"
+        )
+    return values
+
+
+def _declare_solimp_param(
+    node: Node,
+    param_name: str,
+    default_value: tuple[float, float, float, float, float],
+) -> tuple[float, float, float, float, float]:
+    values = _declare_float_vector_param(node, param_name, default_value)
+    d0, d_width, width, midpoint, power = values
+    if not 0.0 <= d0 <= 1.0 or not 0.0 <= d_width <= 1.0:
+        raise ValueError(f"{param_name} impedance values must be in [0, 1]")
+    if width <= 0.0:
+        raise ValueError(f"{param_name} width must be positive")
+    if not 0.0 <= midpoint <= 1.0:
+        raise ValueError(f"{param_name} midpoint must be in [0, 1]")
+    if power < 1.0:
+        raise ValueError(f"{param_name} power must be at least 1")
+    return values
+
+
+def load_physics_params(node: Node, physics_dt: float) -> dict[str, object]:
+    integrator_key = str(
+        node.declare_parameter(
+            "physics_integrator",
+            DEFAULT_PHYSICS_INTEGRATOR,
+        ).value
+    ).strip().lower()
+    integrators = {
+        "euler": "Euler",
+        "rk4": "RK4",
+        "implicit": "implicit",
+        "implicitfast": "implicitfast",
+    }
+    if integrator_key not in integrators:
+        raise ValueError(
+            "physics_integrator must be one of: euler, rk4, implicit, implicitfast"
+        )
+    contact_solref = _declare_solref_param(
+        node,
+        "contact_solref",
+        DEFAULT_CONTACT_SOLREF,
+    )
+    if contact_solref[0] < 2.0 * physics_dt:
+        raise ValueError(
+            "contact_solref time constant must be at least 2 * physics_dt"
+        )
+    return {
+        "timestep": float(physics_dt),
+        "integrator": integrators[integrator_key],
+        "contact_solref": contact_solref,
+        "contact_solimp": _declare_solimp_param(
+            node,
+            "contact_solimp",
+            DEFAULT_CONTACT_SOLIMP,
+        ),
+    }
+
+
 def _urdf_rpy_to_quat_wxyz(
     roll: float, pitch: float, yaw: float
 ) -> tuple[float, float, float, float]:
@@ -242,11 +336,18 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
         "livox_imu_rpy",
         DEFAULT_LIVOX_IMU_RPY,
     )
-    base_height = _declare_positive_float_param(
+    base_bottom_height = _declare_nonnegative_float_param(
         node,
-        "base_height",
-        DEFAULT_BASE_HEIGHT,
+        "base_bottom_height",
+        DEFAULT_BASE_BOTTOM_HEIGHT,
     )
+    base_top_height = _declare_positive_float_param(
+        node,
+        "base_top_height",
+        DEFAULT_BASE_TOP_HEIGHT,
+    )
+    if base_top_height <= base_bottom_height:
+        raise ValueError("base_top_height must be greater than base_bottom_height")
     base_border_size_xyz = _declare_positive_vector3_param(
         node,
         "base_border_size_xyz",
@@ -260,7 +361,8 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
     )
     if (
         enable_base_border
-        and base_border_size_xyz[2] > base_height + BASE_BORDER_TOP_OFFSET
+        and base_border_size_xyz[2]
+        > base_top_height + BASE_BORDER_TOP_OFFSET - base_bottom_height
     ):
         raise ValueError(
             "base_border_size_xyz height must not extend below the base"
@@ -286,12 +388,13 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
             "gimbal_body_diaginertia_xyz",
             DEFAULT_GIMBAL_BODY_DIAGINERTIA_XYZ,
         ),
-        "base_radius": _declare_positive_float_param(
+        "base_bottom_height": base_bottom_height,
+        "base_top_height": base_top_height,
+        "base_diameter": _declare_positive_float_param(
             node,
-            "base_radius",
-            DEFAULT_BASE_RADIUS,
+            "base_diameter",
+            DEFAULT_BASE_DIAMETER,
         ),
-        "base_height": base_height,
         "base_body_mass": _declare_positive_float_param(
             node,
             "base_body_mass",
@@ -299,6 +402,31 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
         ),
         "enable_base_border": enable_base_border,
         "base_border_size_xyz": base_border_size_xyz,
+        "wheel_spacing_x": _declare_positive_float_param(
+            node,
+            "wheel_spacing_x",
+            DEFAULT_WHEEL_SPACING_X,
+        ),
+        "wheel_spacing_y": _declare_positive_float_param(
+            node,
+            "wheel_spacing_y",
+            DEFAULT_WHEEL_SPACING_Y,
+        ),
+        "wheel_diameter": _declare_positive_float_param(
+            node,
+            "wheel_diameter",
+            DEFAULT_WHEEL_DIAMETER,
+        ),
+        "wheel_contact_solref": _declare_solref_param(
+            node,
+            "wheel_contact_solref",
+            DEFAULT_WHEEL_CONTACT_SOLREF,
+        ),
+        "wheel_contact_solimp": _declare_solimp_param(
+            node,
+            "wheel_contact_solimp",
+            DEFAULT_WHEEL_CONTACT_SOLIMP,
+        ),
         "base_direction_arrow_length": _declare_positive_float_param(
             node,
             "base_direction_arrow_length",
@@ -491,7 +619,7 @@ def _build_livox_body_xml(
         <geom name="{display_name}" type="cylinder"
               size="{_format_values((livox_visual_radius, livox_visual_half_height))}"
               material="mat_lidar" mass="0"
-              contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
+              contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="1"
               friction="0 0 0" group="{RENDER_GEOM_GROUP}"/>
         <inertial pos="0 0 0" mass="{livox_body_mass}"
                   diaginertia="{_format_xyz(livox_body_diaginertia_xyz)}"/>
@@ -548,9 +676,9 @@ def build_scene_xml(
     boundary_y_min: float,
     boundary_y_max: float,
     scene_geometry: dict[str, object],
+    physics: dict[str, object],
     enable_left_livox: bool,
     enable_right_livox: bool,
-    physics_dt: float,
 ) -> str:
     spawn_x, spawn_y, spawn_z = robot_init_location
     gimbal_odom_pose = frame_tree.require_frame(FRAME_GIMBAL_ODOM)
@@ -593,7 +721,7 @@ def build_scene_xml(
     collision_geom_xml = "\n".join(
         f'      <geom name="env_collision_geom_{i}" type="mesh" mesh="env_collision_mesh_{i}" '
         f'material="mat_collision_debug" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}" '
-        f'condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>'
+        f'condim="1" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>'
         for i, _ in enumerate(collision_mesh_files)
     )
 
@@ -606,22 +734,22 @@ def build_scene_xml(
             pos="{boundary_x_max + boundary_wall_thickness} 0 {boundary_wall_half_height}"
             size="{boundary_wall_thickness} {boundary_half_span_y} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
-            condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
+            condim="1" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
       <geom name="boundary_wall_neg_x" type="box"
             pos="{boundary_x_min - boundary_wall_thickness} 0 {boundary_wall_half_height}"
             size="{boundary_wall_thickness} {boundary_half_span_y} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
-            condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
+            condim="1" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
       <geom name="boundary_wall_pos_y" type="box"
             pos="0 {boundary_y_max + boundary_wall_thickness} {boundary_wall_half_height}"
             size="{boundary_half_span_x} {boundary_wall_thickness} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
-            condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
+            condim="1" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
       <geom name="boundary_wall_neg_y" type="box"
             pos="0 {boundary_y_min - boundary_wall_thickness} {boundary_wall_half_height}"
             size="{boundary_half_span_x} {boundary_wall_thickness} {boundary_wall_half_height}"
             rgba="0 0 0 0" contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}"
-            condim="3" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>"""
+            condim="1" friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>"""
 
     livox_blocks: list[str] = []
     sensor_blocks: list[str] = []
@@ -662,15 +790,41 @@ def build_scene_xml(
     gimbal_collision_half_extents_xyz = scene_geometry["gimbal_collision_half_extents_xyz"]
     gimbal_body_mass = scene_geometry["gimbal_body_mass"]
     gimbal_body_diaginertia_xyz = scene_geometry["gimbal_body_diaginertia_xyz"]
-    base_radius = scene_geometry["base_radius"]
-    base_height = scene_geometry["base_height"]
-    base_half_height = base_height / 2.0
+    base_bottom_height = scene_geometry["base_bottom_height"]
+    base_top_height = scene_geometry["base_top_height"]
+    base_radius = scene_geometry["base_diameter"] / 2.0
+    base_half_height = (base_top_height - base_bottom_height) / 2.0
+    base_center_height = (base_top_height + base_bottom_height) / 2.0
     base_body_mass = scene_geometry["base_body_mass"]
     base_border_size_xyz = scene_geometry["base_border_size_xyz"]
     base_border_half_extents_xyz = tuple(
         value / 2.0 for value in base_border_size_xyz
     )
-    base_visual_top = base_height
+    wheel_radius = scene_geometry["wheel_diameter"] / 2.0
+    wheel_half_spacing_x = scene_geometry["wheel_spacing_x"] / 2.0
+    wheel_half_spacing_y = scene_geometry["wheel_spacing_y"] / 2.0
+    wheel_solref = _format_values(scene_geometry["wheel_contact_solref"])
+    wheel_solimp = _format_values(scene_geometry["wheel_contact_solimp"])
+    if scene_geometry["wheel_contact_solref"][0] < 2.0 * physics["timestep"]:
+        raise ValueError(
+            "wheel_contact_solref time constant must be at least 2 * physics_dt"
+        )
+    wheel_geoms_xml = "".join(
+        f"""
+      <geom name="{frame_resource(FRAME_BASE_LINK, f'wheel_{name}')}" type="sphere"
+            size="{wheel_radius:.9g}" pos="{x:.9g} {y:.9g} {wheel_radius:.9g}"
+            material="mat_wheel" mass="0" priority="1"
+            solref="{wheel_solref}" solimp="{wheel_solimp}"
+            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="1"
+            friction="0 0 0" group="{RENDER_GEOM_GROUP}"/>"""
+        for name, x, y in (
+            ("front_left", wheel_half_spacing_x, wheel_half_spacing_y),
+            ("front_right", wheel_half_spacing_x, -wheel_half_spacing_y),
+            ("rear_left", -wheel_half_spacing_x, wheel_half_spacing_y),
+            ("rear_right", -wheel_half_spacing_x, -wheel_half_spacing_y),
+        )
+    )
+    base_visual_top = base_top_height
     base_border_xml = ""
     if scene_geometry["enable_base_border"]:
         base_visual_top += BASE_BORDER_TOP_OFFSET
@@ -680,7 +834,7 @@ def build_scene_xml(
             size="{_format_xyz(base_border_half_extents_xyz)}"
             pos="0 0 {base_border_center_z:.9g}"
             material="mat_chassis" mass="0"
-            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
+            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="1"
             friction="0 0 0" group="1"/>"""
     direction_arrow_radius = scene_geometry["direction_arrow_radius"]
     base_direction_arrow_xml = _build_x_direction_arrow_xml(
@@ -705,7 +859,12 @@ def build_scene_xml(
 
     return f"""<mujoco model="sentry_sim_node">
   <compiler angle="radian" meshdir="{meshdir}"/>
-  <option timestep="{physics_dt}" gravity="0 0 -9.81"/>
+  <option timestep="{physics['timestep']}" gravity="0 0 -9.81"
+          integrator="{physics['integrator']}"/>
+  <default>
+    <geom solref="{_format_values(physics['contact_solref'])}"
+          solimp="{_format_values(physics['contact_solimp'])}"/>
+  </default>
   <visual>
     <map force="0.1" zfar="200"/>
   </visual>
@@ -715,6 +874,7 @@ def build_scene_xml(
              width="512" height="512" mark="edge" markrgb="0.5 0.5 0.5"/>
     <material name="mat_ground" texture="tex_grid" texrepeat="10 10" texuniform="true" reflectance="0.1"/>
     <material name="mat_chassis" rgba="0.4 0.4 0.5 1.0"/>
+    <material name="mat_wheel" rgba="0.08 0.08 0.09 1.0"/>
     <material name="mat_gimbal" rgba="0.2 0.2 0.3 1.0"/>
     <material name="mat_lidar" rgba="0.8 0.2 0.2 1.0"/>
     <material name="mat_arena" rgba="0.5 0.5 0.6 1.0"/>
@@ -730,7 +890,7 @@ def build_scene_xml(
   </asset>
   <worldbody>
     <geom name="ground" type="plane" pos="0 0 0" size="50 50 0.1" material="mat_ground"
-          contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}" condim="3"
+          contype="{ENV_CONTYPE}" conaffinity="{ROBOT_CONTYPE}" condim="1"
           friction="0 0 0" group="{COLLISION_GEOM_GROUP}"/>
     <light name="sun" directional="true" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2"
            pos="5 5 10" dir="-0.5 -0.5 -1"/>
@@ -753,10 +913,10 @@ def build_scene_xml(
             contype="0" conaffinity="0" group="1"/>
       <geom name="{frame_resource(FRAME_BASE_LINK, 'body')}" type="cylinder"
             size="{_format_values((base_radius, base_half_height))}"
-            pos="0 0 {base_half_height:.9g}"
+            pos="0 0 {base_center_height:.9g}"
             material="mat_chassis" mass="{base_body_mass}"
-            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
-            friction="0 0 0" group="1"/>{base_border_xml}{base_direction_arrow_xml}
+            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="1"
+            friction="0 0 0" group="1"/>{base_border_xml}{wheel_geoms_xml}{base_direction_arrow_xml}
       <body name="{FRAME_GIMBAL}" pos="{_format_xyz(gimbal_relative_to_base_pos)}"
             quat="{_format_quat_wxyz(gimbal_relative_to_base_quat)}">
         <joint name="{JOINT_GIMBAL_YAW}" type="hinge"
@@ -776,7 +936,7 @@ def build_scene_xml(
             size="{_format_xyz(gimbal_collision_half_extents_xyz)}"
             pos="0 0 {-gimbal_collision_half_extents_xyz[2]:.9g}"
             rgba="0 0 0 0" mass="0"
-            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="3"
+            contype="{ROBOT_CONTYPE}" conaffinity="{ENV_CONTYPE}" condim="1"
             friction="0 0 0" group="1"/>{gimbal_direction_arrow_xml}
       <body name="{FRAME_GIMBAL_ODOM}" pos="{_format_xyz(gimbal_odom_pose.pos)}"
             quat="{_format_quat_wxyz(gimbal_odom_pose.quat_wxyz)}">

@@ -25,6 +25,9 @@ sentry_sim_node:
   ros__parameters:
     robot_init_location: [-4.0,-4.0,0.4]
     physics_dt: 0.002 # /clock follows every physics step: 500 Hz
+    physics_integrator: implicitfast # implicit/implicitfast/Euler/RK4
+    contact_solref: [0.03, 1.2] # [time constant, damping ratio]
+    contact_solimp: [0.9, 0.95, 0.001, 0.5, 2.0]
     imu_rate: 500.0
 
     # Viewer Camera Config
@@ -56,11 +59,17 @@ sentry_sim_node:
     gimbal_collision_half_extents_xyz: [0.17, 0.17, 0.09]
     gimbal_body_mass: 0.001
     gimbal_body_diaginertia_xyz: [0.000001, 0.000001, 0.000001]
-    base_radius: 0.25
-    base_height: 0.14
+    base_bottom_height: 0.03 # chassis lower surface above local ground z=0
+    base_top_height: 0.16 # chassis upper surface above local ground z=0
+    base_diameter: 0.59
     base_body_mass: 20.0
     enable_base_border: true
-    base_border_size_xyz: [0.5, 0.5, 0.1] # full dimensions [length, width, height]
+    base_border_size_xyz: [0.48, 0.48, 0.03] # full dimensions [length, width, height]
+    wheel_spacing_x: 0.38 # front-to-rear sphere center spacing
+    wheel_spacing_y: 0.38 # left-to-right sphere center spacing
+    wheel_diameter: 0.11
+    wheel_contact_solref: [0.05, 1.2] # softer than the global chassis contact
+    wheel_contact_solimp: [0.8, 0.95, 0.003, 0.5, 2.0]
     base_direction_arrow_length: 0.35
     gimbal_direction_arrow_length: 0.25
     direction_arrow_radius: 0.01

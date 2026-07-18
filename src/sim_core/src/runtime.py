@@ -32,6 +32,7 @@ from .scene_builder import (
     livox_accel_sensor_name,
     livox_gyro_sensor_name,
     livox_imu_site_name,
+    load_physics_params,
     load_scene_geometry_params,
     resolve_assets_dir,
 )
@@ -614,7 +615,10 @@ class SimulationRuntime:
             direction_world = force_xy_world / force_norm
         geom_half_height = max(geom_length * 0.5, min_length * 0.5)
         base_pos = self.data.xpos[self.base_body_id].copy()
-        base_debug_height = 0.5 * float(self.scene_geometry["base_height"])
+        base_debug_height = 0.5 * (
+            float(self.scene_geometry["base_bottom_height"])
+            + float(self.scene_geometry["base_top_height"])
+        )
         geom_center = base_pos + np.array(
             [0.0, 0.0, base_debug_height],
             dtype=np.float64,
@@ -772,6 +776,7 @@ class SentrySimNode(Node):
             float(self.declare_parameter("physics_dt", DEFAULT_PHYSICS_DT).value),
             1e-6,
         )
+        physics = load_physics_params(self, physics_dt)
         enable_left_livox = bool(
             self.declare_parameter("enable_left_livox", True).value
         )
@@ -801,9 +806,9 @@ class SentrySimNode(Node):
             boundary_y_min=boundary_y_min,
             boundary_y_max=boundary_y_max,
             scene_geometry=scene_geometry,
+            physics=physics,
             enable_left_livox=enable_left_livox,
             enable_right_livox=enable_right_livox,
-            physics_dt=physics_dt,
         )
         enabled_livox_frames: list[str] = []
         if enable_left_livox:
@@ -831,6 +836,7 @@ class SentrySimNode(Node):
         self.get_logger().info(
             f"sentry_sim_node ready: enable_left_livox={enable_left_livox}, "
             f"enable_right_livox={enable_right_livox}, physics_dt={physics_dt:.4f}, "
+            f"integrator={physics['integrator']}, "
             f"clock_rate={physics_rate:.1f}, imu_rate={imu_rate:.1f}, "
             f"robot_init_location={list(robot_init_location)}, "
             f"boundary_x=[{boundary_x_min:.2f}, {boundary_x_max:.2f}], "
