@@ -4,8 +4,10 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
+from sim_core.components.comp_chassis import ChassisComponent
 from sim_core.components.comp_gimbal import GimbalComponent
 
 
@@ -20,10 +22,43 @@ class FakeTime:
 def make_twist(chassis_yaw_rate: float, gimbal_yaw_rate: float):
     return SimpleNamespace(
         angular=SimpleNamespace(
-            x=chassis_yaw_rate,
-            z=gimbal_yaw_rate,
+            x=gimbal_yaw_rate,
+            z=chassis_yaw_rate,
         )
     )
+
+
+def make_chassis_twist(vx: float, vy: float):
+    return SimpleNamespace(linear=SimpleNamespace(x=vx, y=vy))
+
+
+def test_chassis_force_uses_base_link_coordinates() -> None:
+    controller = ChassisComponent(
+        timeout_sec=0.5,
+        linear_accel_limit=0.0,
+        velocity_p_gain=2.0,
+        velocity_d_gain=0.0,
+        max_force=0.0,
+    )
+    now = FakeTime(0)
+    controller.update_from_twist(make_chassis_twist(1.0, 0.0), now)
+    base_rot_mat = np.array(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+
+    force_world = controller.compute_drive_force(
+        now,
+        dt=0.1,
+        base_rot_mat=base_rot_mat,
+        base_linear_velocity_world=np.zeros(3, dtype=np.float64),
+    )
+
+    assert force_world == pytest.approx((0.0, 2.0, 0.0))
 
 
 def make_controller(
@@ -43,6 +78,18 @@ def make_controller(
         0.2,
         4.0,
     )
+
+
+def test_twist_angular_fields_follow_sim_cmd_vel_contract() -> None:
+    controller = make_controller()
+
+    controller.update_from_twist(
+        SimpleNamespace(angular=SimpleNamespace(x=1.5, z=-2.5)),
+        FakeTime(0),
+    )
+
+    assert controller.raw_gimbal_yaw_rate == pytest.approx(1.5)
+    assert controller.raw_chassis_yaw_rate == pytest.approx(-2.5)
 
 
 def test_target_rates_are_slew_limited_before_pd_control() -> None:

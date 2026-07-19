@@ -192,7 +192,7 @@ class ComponentManager:
         self,
         now,
         dt: float,
-        gimbal_rot_mat,
+        base_rot_mat,
         base_linear_velocity_world,
         chassis_yaw_rate: float,
         gimbal_yaw_rate: float,
@@ -201,7 +201,7 @@ class ComponentManager:
         base_force_world = self.chassis_component.compute_drive_force(
             now,
             dt,
-            gimbal_rot_mat,
+            base_rot_mat,
             base_linear_velocity_world,
         )
         chassis_yaw_torque, gimbal_yaw_torque = (

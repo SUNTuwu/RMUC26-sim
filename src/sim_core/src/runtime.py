@@ -700,7 +700,7 @@ class SimulationRuntime:
                     ) = self.control_provider(
                         now_ros,
                         self.physics_dt,
-                        gimbal_rot_mat,
+                        base_rot_mat,
                         base_linear_velocity_world,
                         chassis_yaw_rate,
                         gimbal_yaw_rate,

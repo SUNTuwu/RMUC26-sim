@@ -51,8 +51,8 @@ class GimbalComponent:
         self.has_last_yaw_rates = False
 
     def update_from_twist(self, msg, now) -> None:
-        self.raw_chassis_yaw_rate = float(msg.angular.x)
-        self.raw_gimbal_yaw_rate = float(msg.angular.z)
+        self.raw_gimbal_yaw_rate = float(msg.angular.x)
+        self.raw_chassis_yaw_rate = float(msg.angular.z)
         self.last_cmd_time = now
 
     def _sample_target_rates(self, now, dt: float) -> tuple[float, float]:

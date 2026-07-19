@@ -32,6 +32,8 @@ def _clamp_vector_norm(vec: np.ndarray, max_norm: float) -> np.ndarray:
 
 
 class ChassisComponent:
+    """Track planar velocity commands expressed in the base_link frame."""
+
     def __init__(
         self,
         timeout_sec: float,
@@ -50,8 +52,8 @@ class ChassisComponent:
         self.filtered_vx = 0.0
         self.filtered_vy = 0.0
         self.last_cmd_time = None
-        self.last_local_velocity = np.zeros(2, dtype=np.float64)
-        self.has_last_local_velocity = False
+        self.last_base_velocity = np.zeros(2, dtype=np.float64)
+        self.has_last_base_velocity = False
 
     def update_from_twist(self, msg, now) -> None:
         self.raw_vx = float(msg.linear.x)
@@ -79,26 +81,26 @@ class ChassisComponent:
         self,
         now,
         dt: float,
-        gimbal_rot_mat: np.ndarray,
+        base_rot_mat: np.ndarray,
         base_linear_velocity_world: np.ndarray,
     ) -> np.ndarray:
-        target_local_velocity = self._sample_target_velocity(now, dt)
-        local_velocity = (
-            np.asarray(gimbal_rot_mat, dtype=np.float64).T
+        target_base_velocity = self._sample_target_velocity(now, dt)
+        base_velocity = (
+            np.asarray(base_rot_mat, dtype=np.float64).T
             @ np.asarray(base_linear_velocity_world, dtype=np.float64)
         )[:2]
-        local_accel = np.zeros(2, dtype=np.float64)
-        if self.has_last_local_velocity and dt > 0.0:
-            local_accel = (local_velocity - self.last_local_velocity) / dt
-        self.last_local_velocity = local_velocity.copy()
-        self.has_last_local_velocity = True
-        velocity_error = target_local_velocity - local_velocity
-        force_local = (
-            velocity_error * self.velocity_p_gain - local_accel * self.velocity_d_gain
+        base_accel = np.zeros(2, dtype=np.float64)
+        if self.has_last_base_velocity and dt > 0.0:
+            base_accel = (base_velocity - self.last_base_velocity) / dt
+        self.last_base_velocity = base_velocity.copy()
+        self.has_last_base_velocity = True
+        velocity_error = target_base_velocity - base_velocity
+        force_base = (
+            velocity_error * self.velocity_p_gain - base_accel * self.velocity_d_gain
         )
-        force_local = _clamp_vector_norm(force_local, self.max_force)
-        force_world = np.asarray(gimbal_rot_mat, dtype=np.float64) @ np.array(
-            [force_local[0], force_local[1], 0.0],
+        force_base = _clamp_vector_norm(force_base, self.max_force)
+        force_world = np.asarray(base_rot_mat, dtype=np.float64) @ np.array(
+            [force_base[0], force_base[1], 0.0],
             dtype=np.float64,
         )
         return force_world

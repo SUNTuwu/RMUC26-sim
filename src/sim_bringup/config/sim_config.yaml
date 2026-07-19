@@ -10,8 +10,12 @@ keyboard_test:
 chassis_adapter:
   ros__parameters:
     keyboard_cmd_vel_topic: /sim/keyboard/cmd_vel
+    nav_cmd_vel_topic: /cmd_vel_processed
+    nav_update_counter_topic: /update_counter
     cmd_vel_out_topic: /sim/cmd_vel
-    publish_rate: 100.0
+    joint_state_topic: /joint_states
+    gimbal_joint_name: gimbal_to_base
+    publish_rate: 500.0 # run between 200 Hz processed frames like the lower-board loop
     small_gyro_spin_rate: 6.0
     small_gyro_toggle_timeout_sec: 1.0
     linear_cmd_timeout_sec: 0.5
