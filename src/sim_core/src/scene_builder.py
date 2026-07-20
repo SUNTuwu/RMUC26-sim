@@ -64,6 +64,12 @@ DEFAULT_IMU_ACCEL_DEBUG_MIN_LENGTH = 0.002
 DEFAULT_BASE_FORCE_DEBUG_RADIUS = 0.006
 DEFAULT_BASE_FORCE_DEBUG_SCALE = 0.004
 DEFAULT_BASE_FORCE_DEBUG_MIN_LENGTH = 0.03
+DEFAULT_BASE_VELOCITY_DEBUG_HEIGHT = 1.0
+DEFAULT_BASE_VELOCITY_DEBUG_RADIUS = 0.01
+DEFAULT_BASE_VELOCITY_DEBUG_SCALE = 0.25
+DEFAULT_BASE_VELOCITY_DEBUG_MIN_LENGTH = 0.05
+DEFAULT_BASE_VELOCITY_DEBUG_MIN_SPEED = 0.01
+DEFAULT_BASE_VELOCITY_DEBUG_RGBA = (0.65, 0.0, 1.0, 0.95)
 DEFAULT_BOUNDARY_WALL_THICKNESS = 0.05
 DEFAULT_BOUNDARY_WALL_HEIGHT = 1.2
 DEFAULT_LIVOX_IMU_OFFSET_XYZ = (-0.011, -0.02329, 0.04412)
@@ -104,6 +110,14 @@ def base_force_debug_geom_name() -> str:
 
 def base_force_debug_body_name() -> str:
     return frame_resource(FRAME_BASE_LINK, "force_debug_body")
+
+
+def base_velocity_debug_geom_name() -> str:
+    return frame_resource(FRAME_BASE_LINK, "velocity_debug")
+
+
+def base_velocity_debug_body_name() -> str:
+    return frame_resource(FRAME_BASE_LINK, "velocity_debug_body")
 
 
 def _format_values(values: tuple[float, ...]) -> str:
@@ -532,6 +546,36 @@ def load_scene_geometry_params(node: Node) -> dict[str, object]:
             "base_force_debug_min_length",
             DEFAULT_BASE_FORCE_DEBUG_MIN_LENGTH,
         ),
+        "base_velocity_debug_height": _declare_positive_float_param(
+            node,
+            "base_velocity_debug_height",
+            DEFAULT_BASE_VELOCITY_DEBUG_HEIGHT,
+        ),
+        "base_velocity_debug_radius": _declare_positive_float_param(
+            node,
+            "base_velocity_debug_radius",
+            DEFAULT_BASE_VELOCITY_DEBUG_RADIUS,
+        ),
+        "base_velocity_debug_scale": _declare_positive_float_param(
+            node,
+            "base_velocity_debug_scale",
+            DEFAULT_BASE_VELOCITY_DEBUG_SCALE,
+        ),
+        "base_velocity_debug_min_length": _declare_positive_float_param(
+            node,
+            "base_velocity_debug_min_length",
+            DEFAULT_BASE_VELOCITY_DEBUG_MIN_LENGTH,
+        ),
+        "base_velocity_debug_min_speed": _declare_nonnegative_float_param(
+            node,
+            "base_velocity_debug_min_speed",
+            DEFAULT_BASE_VELOCITY_DEBUG_MIN_SPEED,
+        ),
+        "base_velocity_debug_rgba": _declare_rgba_param(
+            node,
+            "base_velocity_debug_rgba",
+            DEFAULT_BASE_VELOCITY_DEBUG_RGBA,
+        ),
         "boundary_wall_thickness": _declare_nonnegative_float_param(
             node,
             "boundary_wall_thickness",
@@ -761,6 +805,15 @@ def build_scene_xml(
               size="{_format_values((scene_geometry['base_force_debug_radius'], scene_geometry['base_force_debug_min_length'] / 2.0))}"
               rgba="0.1 1.0 0.2 0.9" mass="0"
               contype="0" conaffinity="0" group="1"/>
+      </body>"""
+    )
+    debug_blocks.append(
+        f"""
+      <body name="{base_velocity_debug_body_name()}" mocap="true" pos="0 0 0" quat="1 0 0 0">
+        <geom name="{base_velocity_debug_geom_name()}" type="cylinder"
+              size="{_format_values((scene_geometry['base_velocity_debug_radius'], scene_geometry['base_velocity_debug_min_length'] / 2.0))}"
+              rgba="{_format_values(scene_geometry['base_velocity_debug_rgba'])}" mass="0"
+              contype="0" conaffinity="0" group="{RENDER_GEOM_GROUP}"/>
       </body>"""
     )
     for frame_name, enabled, pose in (

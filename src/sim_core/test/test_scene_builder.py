@@ -117,6 +117,32 @@ def test_base_top_must_be_above_bottom() -> None:
         load_scene_geometry_params(node)
 
 
+def test_base_velocity_debug_is_purple_visual_only() -> None:
+    scene_geometry = load_scene_geometry_params(FakeNode())
+    assert scene_geometry["base_velocity_debug_height"] == 1.0
+    assert scene_geometry["base_velocity_debug_rgba"] == pytest.approx(
+        (0.65, 0.0, 1.0, 0.95)
+    )
+
+
+def test_base_velocity_debug_geom_has_no_physics_or_lidar_role(
+    tmp_path: Path,
+) -> None:
+    root = _build_default_scene(tmp_path)
+    body = root.find(".//body[@name='base_link__velocity_debug_body']")
+    geom = root.find(".//geom[@name='base_link__velocity_debug']")
+
+    assert body is not None
+    assert body.attrib["mocap"] == "true"
+    assert geom is not None
+    assert geom.attrib["type"] == "cylinder"
+    assert geom.attrib["mass"] == "0"
+    assert geom.attrib["contype"] == "0"
+    assert geom.attrib["conaffinity"] == "0"
+    assert geom.attrib["group"] == "1"
+    assert _float_values(geom, "rgba") == pytest.approx((0.65, 0.0, 1.0, 0.95))
+
+
 def test_contact_time_constant_must_fit_timestep() -> None:
     node = FakeNode({"contact_solref": [0.003, 1.0]})
 

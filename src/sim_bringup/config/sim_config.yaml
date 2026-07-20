@@ -12,21 +12,26 @@ chassis_adapter:
     keyboard_cmd_vel_topic: /sim/keyboard/cmd_vel
     nav_cmd_vel_topic: /cmd_vel_processed
     nav_update_counter_topic: /update_counter
+    base_yaw_topic: /sim/base_yaw
     cmd_vel_out_topic: /sim/cmd_vel
     joint_state_topic: /joint_states
     gimbal_joint_name: gimbal_to_base
-    publish_rate: 500.0 # run between 200 Hz processed frames like the lower-board loop
+    publish_rate: 200.0
     small_gyro_spin_rate: 6.0
     small_gyro_toggle_timeout_sec: 1.0
     linear_cmd_timeout_sec: 0.5
+    nav_cmd_timeout_sec: 0.5
+    spin_offset_gain_sec: 0.0 # set to the lower-board CHASSIS_GYRO_OFFSET when known
+    spin_offset_min_yaw_rate: 1.0
 
 imu_adapter:
   ros__parameters:
     imu_ips: ["192.168.10.4", "192.168.10.5"]
-    imu_low_pass_cutoff_hz: 60.0
+    imu_low_pass_cutoff_hz: 300.0
 
 sentry_sim_node:
   ros__parameters:
+    base_yaw_topic: /sim/base_yaw
     robot_init_location: [-4.0,-4.0,0.4]
     physics_dt: 0.002 # /clock follows every physics step: 500 Hz
     physics_integrator: implicitfast # implicit/implicitfast/Euler/RK4
@@ -95,6 +100,12 @@ sentry_sim_node:
     base_force_debug_radius: 0.01
     base_force_debug_scale: 0.006
     base_force_debug_min_length: 0.05
+    base_velocity_debug_height: 1.0
+    base_velocity_debug_radius: 0.01
+    base_velocity_debug_scale: 0.25
+    base_velocity_debug_min_length: 0.05
+    base_velocity_debug_min_speed: 0.01
+    base_velocity_debug_rgba: [0.65, 0.0, 1.0, 0.95] # purple, viewer only
     boundary_wall_thickness: 0.05
     boundary_wall_height: 1.2
 

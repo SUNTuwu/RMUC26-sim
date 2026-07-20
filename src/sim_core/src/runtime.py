@@ -11,8 +11,8 @@ import mujoco
 import numpy as np
 import rclpy
 import rosgraph_msgs.msg
-import std_msgs.msg
 from rclpy.node import Node
+import std_msgs.msg
 
 from .component_manager import ComponentManager
 from .frame_tree import (
@@ -26,6 +26,8 @@ from .frame_tree import (
 from .scene_builder import (
     base_force_debug_body_name,
     base_force_debug_geom_name,
+    base_velocity_debug_body_name,
+    base_velocity_debug_geom_name,
     build_scene_xml,
     livox_accel_debug_body_name,
     livox_accel_debug_geom_name,
@@ -55,6 +57,7 @@ DEFAULT_VIEWER_FOCUS_SMOOTHING_TIME_SEC = 0.5
 DEFAULT_VIEWER_MANUAL_CAMERA_TIMEOUT_SEC = 1.0
 DEFAULT_VIEWER_MANUAL_CAMERA_POSITION_EPSILON = 1e-5
 DEFAULT_VIEWER_MANUAL_CAMERA_ANGLE_EPSILON_DEG = 1e-3
+DEFAULT_BASE_YAW_TOPIC = "/sim/base_yaw"
 
 
 def _coerce_vector3_param(raw_value, param_name: str) -> tuple[float, float, float]:
@@ -65,6 +68,14 @@ def _coerce_vector3_param(raw_value, param_name: str) -> tuple[float, float, flo
 
 def wrap_to_pi(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def yaw_from_mujoco_quaternion(quat) -> float:
+    """Return world-frame yaw from a MuJoCo [w, x, y, z] quaternion."""
+    return math.atan2(
+        2.0 * (quat[0] * quat[3] + quat[1] * quat[2]),
+        1.0 - 2.0 * (quat[2] ** 2 + quat[3] ** 2),
+    )
 
 
 def interpolate_angle_degrees(current: float, target: float, alpha: float) -> float:
@@ -142,6 +153,14 @@ class SimulationRuntime:
         ).strip()
         if not self.viewer_focus_topic:
             raise ValueError("viewer_focus_topic must not be empty")
+        self.base_yaw_topic = str(
+            node.declare_parameter(
+                "base_yaw_topic",
+                DEFAULT_BASE_YAW_TOPIC,
+            ).value
+        ).strip()
+        if not self.base_yaw_topic:
+            raise ValueError("base_yaw_topic must not be empty")
         self.viewer_focus_on_start = bool(
             node.declare_parameter(
                 "viewer_focus_on_start",
@@ -216,6 +235,11 @@ class SimulationRuntime:
         self.gimbal_joint_pos = 0.0
         self.gimbal_joint_vel = 0.0
         self.clock_pub = node.create_publisher(rosgraph_msgs.msg.Clock, "/clock", 10)
+        self.base_yaw_pub = node.create_publisher(
+            std_msgs.msg.Float64,
+            self.base_yaw_topic,
+            10,
+        )
         self.gimbal_joint_id = self._require_name(
             mujoco.mjtObj.mjOBJ_JOINT,
             JOINT_GIMBAL_YAW,
@@ -243,6 +267,23 @@ class SimulationRuntime:
         )
         if self.base_force_debug_mocap_id < 0:
             raise RuntimeError("MuJoCo mocap body not found: base force debug")
+        self.base_velocity_debug_body_id = self._require_name(
+            mujoco.mjtObj.mjOBJ_BODY,
+            base_velocity_debug_body_name(),
+        )
+        self.base_velocity_debug_geom_id = self._require_name(
+            mujoco.mjtObj.mjOBJ_GEOM,
+            base_velocity_debug_geom_name(),
+        )
+        self.base_velocity_debug_mocap_id = int(
+            self.model.body_mocapid[self.base_velocity_debug_body_id]
+        )
+        if self.base_velocity_debug_mocap_id < 0:
+            raise RuntimeError("MuJoCo mocap body not found: base velocity debug")
+        self.base_velocity_debug_rgba = np.asarray(
+            self.scene_geometry["base_velocity_debug_rgba"],
+            dtype=np.float32,
+        )
         self.livox_handles: dict[str, dict[str, int]] = {}
         for frame_name in self.enabled_livox_frames:
             self.livox_handles[frame_name] = self._bind_livox_frame(frame_name)
@@ -253,6 +294,7 @@ class SimulationRuntime:
             10,
         )
         mujoco.mj_forward(self.model, self.data)
+        self._update_base_velocity_debug_geom(np.zeros(3, dtype=np.float64))
         self._initialize_odom_reference_locked()
         self._start_viewer_if_requested()
 
@@ -633,13 +675,64 @@ class SimulationRuntime:
         )
         self.model.geom_size[self.base_force_debug_geom_id, 1] = geom_half_height
 
+    def _update_base_velocity_debug_geom(
+        self,
+        base_linear_velocity_world: np.ndarray,
+    ) -> None:
+        velocity_xy_world = np.array(
+            [
+                float(base_linear_velocity_world[0]),
+                float(base_linear_velocity_world[1]),
+                0.0,
+            ],
+            dtype=np.float64,
+        )
+        speed = float(np.linalg.norm(velocity_xy_world))
+        min_speed = float(self.scene_geometry["base_velocity_debug_min_speed"])
+        min_length = float(self.scene_geometry["base_velocity_debug_min_length"])
+        anchor = self.data.xpos[self.base_body_id].copy() + np.array(
+            [0.0, 0.0, float(self.scene_geometry["base_velocity_debug_height"])],
+            dtype=np.float64,
+        )
+        rgba = self.base_velocity_debug_rgba.copy()
+
+        if speed <= min_speed:
+            rgba[3] = 0.0
+            geom_length = min_length
+            self.data.mocap_pos[self.base_velocity_debug_mocap_id, :] = anchor
+            self.data.mocap_quat[self.base_velocity_debug_mocap_id, :] = (
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+            )
+        else:
+            direction_world = velocity_xy_world / speed
+            geom_length = max(
+                speed * float(self.scene_geometry["base_velocity_debug_scale"]),
+                min_length,
+            )
+            geom_half_length = geom_length * 0.5
+            self.data.mocap_pos[self.base_velocity_debug_mocap_id, :] = (
+                anchor + direction_world * geom_half_length
+            )
+            self.data.mocap_quat[self.base_velocity_debug_mocap_id, :] = np.asarray(
+                quat_from_local_z_axis(direction_world),
+                dtype=np.float64,
+            )
+
+        self.model.geom_rgba[self.base_velocity_debug_geom_id, :] = rgba
+        self.model.geom_size[self.base_velocity_debug_geom_id, 0] = float(
+            self.scene_geometry["base_velocity_debug_radius"]
+        )
+        self.model.geom_size[self.base_velocity_debug_geom_id, 1] = (
+            geom_length * 0.5
+        )
+
     def _initialize_odom_reference_locked(self) -> None:
         gimbal_pos = self.data.xpos[self.gimbal_body_id].copy()
         gimbal_quat = self.data.xquat[self.gimbal_body_id].copy()
-        gimbal_yaw = math.atan2(
-            2.0 * (gimbal_quat[0] * gimbal_quat[3] + gimbal_quat[1] * gimbal_quat[2]),
-            1.0 - 2.0 * (gimbal_quat[2] ** 2 + gimbal_quat[3] ** 2),
-        )
+        gimbal_yaw = yaw_from_mujoco_quaternion(gimbal_quat)
         self.odom_origin_x = float(gimbal_pos[0])
         self.odom_origin_y = float(gimbal_pos[1])
         self.odom_origin_yaw = gimbal_yaw
@@ -713,16 +806,23 @@ class SimulationRuntime:
                 self.data.xfrc_applied[self.base_body_id, 3:6] = base_torque_world
                 self.data.qfrc_applied[self.gimbal_dof_adr] = float(gimbal_yaw_torque)
                 mujoco.mj_step(self.model, self.data)
+                mujoco.mj_kinematics(self.model, self.data)
+                _, visual_base_linear_velocity_world = self._read_body_velocity_world(
+                    self.base_body_id
+                )
                 for frame_name in self.enabled_livox_frames:
                     acc, _ = self.read_imu_for_frame_locked(frame_name)
                     self._update_imu_accel_debug_geom(frame_name, acc / GRAVITY_M_S2)
                 self._update_base_force_debug_geom(base_force_world)
+                self._update_base_velocity_debug_geom(
+                    visual_base_linear_velocity_world
+                )
                 mujoco.mj_forward(self.model, self.data)
                 pos = self.data.xpos[self.gimbal_body_id].copy()
                 quat = self.data.xquat[self.gimbal_body_id].copy()
-                gimbal_yaw = math.atan2(
-                    2.0 * (quat[0] * quat[3] + quat[1] * quat[2]),
-                    1.0 - 2.0 * (quat[2] ** 2 + quat[3] ** 2),
+                gimbal_yaw = yaw_from_mujoco_quaternion(quat)
+                base_yaw = yaw_from_mujoco_quaternion(
+                    self.data.xquat[self.base_body_id]
                 )
                 dx = float(pos[0]) - self.odom_origin_x
                 dy = float(pos[1]) - self.odom_origin_y
@@ -739,6 +839,7 @@ class SimulationRuntime:
             msg = rosgraph_msgs.msg.Clock()
             msg.clock = self._stamp_from_ns(current_sim_time_ns)
             self.clock_pub.publish(msg)
+            self.base_yaw_pub.publish(std_msgs.msg.Float64(data=base_yaw))
             time.sleep(self.physics_dt)
 
 

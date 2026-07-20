@@ -21,7 +21,7 @@ source_setup "${ROOT_DIR}/.venv/bin/activate"
 source_setup "${ROOT_DIR}/src/external/RM2026-sentry-ws/install/setup.bash"
 source_setup "${ROOT_DIR}/install/setup.bash"
 
-export ROBOT_TYPE="${ROBOT_TYPE:-sim_sentry_fold}"
+export ROBOT_TYPE="${ROBOT_TYPE:-26_sentry_tunnel}"
 
 ros2 launch sim_bringup sim3d_nav.launch.py \
   use_nav_rviz:="${USE_NAV_RVIZ:-true}" \

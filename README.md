@@ -48,7 +48,7 @@ sentry_sim/
 
 - `runtime`
   - 对应 `sim_core/runtime.py` 及其依赖的 `frame_tree.py`、`scene_builder.py`。
-  - 负责加载机器人 frame 树、拼装 MuJoCo 场景、维护物理步进、仿真时钟和内部真值读取接口。
+  - 负责加载机器人 frame 树、拼装 MuJoCo 场景、维护物理步进、仿真时钟和内部真值读取接口；其中底盘世界 yaw 通过内部话题 `/sim/base_yaw` 提供给控制适配层。
   - 只关心仿真内部状态与物理执行，不直接承接键盘、导航、串口这类外部协议语义。
 - `components`
   - 对应 `sim_core/components/` 与 `component_manager.py`。
@@ -57,7 +57,7 @@ sentry_sim/
 - `adapters`
   - 对应 `sim_core/adapters/` 下的独立 ROS 节点。
   - 负责把外部控制链或导航链的话题语义整理成仿真内部统一接口，或把仿真/估计结果转换成外部更需要的反馈接口。
-  - `adapters/chassis_adapter.py` 负责把键盘控制整理成 `/sim/cmd_vel`；`adapters/imu_adapter.py` 负责把 `/sim/imu_*` 低通滤波后发布为 `/livox/imu_*`；`adapters/nav_feedback_adapter.py` 负责把 `/gimbal_Odometry`、`/joint_states` 等整理成 `/Odometry` 和外部反馈话题。
+  - `adapters/chassis_adapter.py` 负责把键盘控制或处理后的 Nav 控制整理成 `/sim/cmd_vel`，并依据 `/update_counter` 和 `/sim/base_yaw` 补偿 Nav 帧保持期间的底盘姿态变化；Nav 新鲜时独占底盘平移与旋转，键盘仍独立更新云台速度，Nav 超时后恢复键盘底盘控制。Nav 的 `angular.x == 1.0` 时才透传底盘 `angular.z`，输出 `angular.x` 始终保留独立云台状态。`adapters/imu_adapter.py` 负责把 `/sim/imu_*` 低通滤波后发布为 `/livox/imu_*`；`adapters/nav_feedback_adapter.py` 负责把 `/gimbal_Odometry`、`/joint_states` 等整理成 `/Odometry` 和外部反馈话题。
 
 ### 分层约束
 
